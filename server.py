@@ -104,6 +104,12 @@ class ZImageService:
         )
         AttentionBackend.print_available_backends()
         set_attention_backend(self._attn_backend)
+
+        text_encoder = components.get("text_encoder")
+        if text_encoder is not None and torch.cuda.is_available():
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
         self._components = components
 
     def generate_image_base64(
