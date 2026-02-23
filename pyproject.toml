@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zimage-native"
+version = "0.1.0"
+description = "Z-Image PyTorch Native Implementation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.5.0",
+    "transformers>=4.51.0",
+    "safetensors",
+    "loguru",
+    "pillow",
+    "accelerate",
+    "huggingface_hub>=0.25.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "ruff"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
