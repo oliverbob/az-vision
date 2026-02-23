@@ -51,7 +51,13 @@ run_preflight() {
     if [ "${RUN_FRONTEND_INSTALL}" = "1" ]; then
       if [ ! -d "node_modules" ]; then
         echo "Installing frontend dependencies..."
-        npm install
+        npm install --include=optional
+      fi
+
+      if ! node -e "require('@tailwindcss/oxide')" >/dev/null 2>&1; then
+        echo "Detected missing Tailwind native optional dependency; reinstalling frontend deps..."
+        rm -rf node_modules package-lock.json
+        npm install --include=optional
       fi
     fi
 
