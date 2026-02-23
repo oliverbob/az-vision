@@ -1,13 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  type ChatMessage = {
+    role: "user" | "assistant";
+    content: string;
+    createdAt: number;
+    imageUrl?: string;
+  };
+
   let messageText = "";
   let loading = false;
   let error = "";
   let drawerOpen = true;
   let composerTextarea: HTMLTextAreaElement | null = null;
   let theme: "dark" | "light" = "dark";
-  let messages: { role: "user" | "assistant"; content: string; createdAt: number }[] = [];
+  let messages: ChatMessage[] = [];
 
   const suggestions = [
     { label: "Latest AI news", icon: "🔎", variant: "news" },
@@ -69,7 +76,7 @@
         throw new Error(details || `Request failed: ${response.status}`);
       }
 
-      const data = (await response.json()) as { reply: string };
+      const data = (await response.json()) as { reply: string; imageUrl?: string | null };
 
       messages = [
         ...messages,
@@ -77,6 +84,7 @@
           role: "assistant",
           content: data.reply,
           createdAt: Date.now(),
+          imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : undefined,
         },
       ];
     } catch (e) {
@@ -463,7 +471,15 @@
                       ? 'border-indigo-400/30 bg-indigo-600/30 text-indigo-50'
                       : 'border-[#2a3557] bg-[#111b34] text-slate-200'}"
                   >
-                    {msg.content}
+                    <p class="whitespace-pre-wrap">{msg.content}</p>
+                    {#if msg.imageUrl}
+                      <img
+                        src={msg.imageUrl}
+                        alt="Generated result"
+                        class="mt-3 w-full rounded-xl border border-[#2a3557]"
+                        loading="lazy"
+                      />
+                    {/if}
                   </div>
                 </article>
               {/each}

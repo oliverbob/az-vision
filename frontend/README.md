@@ -15,7 +15,13 @@ npm install
 cp .env.example .env
 ```
 
-Set `MODEL_CHAT_URL` to your chat backend endpoint that accepts:
+Set `MODEL_CHAT_URL` to your chat backend endpoint. By default, `.env.example` points to:
+
+`http://127.0.0.1:9090/api/chat`
+
+The local frontend API route supports either:
+
+- simple backend shape:
 
 ```json
 {
@@ -24,7 +30,9 @@ Set `MODEL_CHAT_URL` to your chat backend endpoint that accepts:
 }
 ```
 
-And returns:
+- or Ollama-like backend shape (`/api/chat`) with image data.
+
+Simple shape returns:
 
 ```json
 {
@@ -38,6 +46,9 @@ If `MODEL_CHAT_URL` is not set, `/api/chat` returns a local echo reply so UI can
 
 ```bash
 npm run dev
+
+# Or run on 4040
+npm run dev -- --port 4040
 ```
 
-Open: `http://localhost:5173`
+Open: `http://localhost:4040`

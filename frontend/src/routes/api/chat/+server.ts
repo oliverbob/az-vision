@@ -21,23 +21,47 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       return json({ error: "Message is required" }, { status: 400 });
     }
 
-    const modelChatUrl = env.MODEL_CHAT_URL;
+    const modelChatUrl = env.MODEL_CHAT_URL?.trim() || "http://127.0.0.1:9090/api/chat";
+    const modelName = env.MODEL_NAME?.trim() || "Z-image-turbo";
+    const defaultHeight = Number(env.ZIMAGE_HEIGHT ?? "512");
+    const defaultWidth = Number(env.ZIMAGE_WIDTH ?? "512");
+    const defaultSteps = Number(env.ZIMAGE_STEPS ?? "4");
+    const defaultGuidance = Number(env.ZIMAGE_GUIDANCE_SCALE ?? "0.0");
 
-    if (!modelChatUrl) {
-      return json({
-        reply: `Echo: ${message}\n\nSet MODEL_CHAT_URL in frontend/.env to connect a real model backend.`,
-      });
-    }
+    const isOllamaApi = modelChatUrl.includes("/api/chat");
+
+    const upstreamPayload = isOllamaApi
+      ? {
+          model: modelName,
+          messages: [
+            ...history.map((entry) => ({
+              role: entry.role,
+              content: entry.content,
+            })),
+            {
+              role: "user",
+              content: message,
+            },
+          ],
+          options: {
+            height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
+            width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
+            num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
+            guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
+          },
+          stream: false,
+        }
+      : {
+          message,
+          history,
+        };
 
     const upstream = await fetch(modelChatUrl, {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        message,
-        history,
-      }),
+      body: JSON.stringify(upstreamPayload),
     });
 
     if (!upstream.ok) {
@@ -51,9 +75,29 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     }
 
     const data = await upstream.json();
-    const reply = typeof data?.reply === "string" ? data.reply : JSON.stringify(data);
+    const reply =
+      typeof data?.reply === "string"
+        ? data.reply
+        : typeof data?.message?.content === "string"
+          ? data.message.content
+          : typeof data?.response === "string"
+            ? data.response
+            : JSON.stringify(data);
 
-    return json({ reply });
+    const imageBase64 =
+      typeof data?.message?.images?.[0] === "string"
+        ? data.message.images[0]
+        : typeof data?.images?.[0] === "string"
+          ? data.images[0]
+          : null;
+
+    const imageUrl = imageBase64
+      ? imageBase64.startsWith("data:image")
+        ? imageBase64
+        : `data:image/png;base64,${imageBase64}`
+      : null;
+
+    return json({ reply, imageUrl });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown server error";
     return json({ error: message }, { status: 500 });
