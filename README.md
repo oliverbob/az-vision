@@ -291,12 +291,12 @@ pip install -e .
 python server.py
 ```
 
-By default, it listens on `http://0.0.0.0:8000`.
+By default, it listens on `http://0.0.0.0:9090`.
 
 ### OpenAI-style example
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:9090/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{
     "model": "Z-image-turbo",
@@ -313,7 +313,7 @@ curl http://localhost:8000/v1/chat/completions \
 ### Ollama-like example
 
 ```bash
-curl http://localhost:8000/api/chat \
+curl http://localhost:9090/api/chat \
   -H 'content-type: application/json' \
   -d '{
     "model": "Z-image-turbo",
