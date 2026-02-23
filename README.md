@@ -266,6 +266,71 @@ Our core insight behind DMDR is that Reinforcement Learning (RL) and Distributio
 - [Candle](https://github.com/huggingface/candle) is a minimalist machine learning (ML) framework launched by Huggingface for Rust, which now [supports](https://github.com/huggingface/candle/pull/3261) Z-Image.
 - [MeanCache](https://github.com/UnicomAI/MeanCache), a training-free inference acceleration method for Flow Matching models by China Unicom Data Science and Artificial Intelligence Research Institute. Delivers up to **3.7x** speedup for **Z-Image** generation with plug-and-play integration while preserving output quality.
 
+## 💬 SvelteKit Chat Frontend
+
+A mobile-first chat UI is available in [frontend](frontend). It is intended for fast interface creation around model chat backends.
+
+See [frontend/README.md](frontend/README.md) for setup and API payload format.
+
+## 🧩 OpenAI / Ollama-Compatible Python API
+
+You can run a Python server for `Z-image-turbo` that exposes:
+
+- OpenAI-style:
+  - `POST /v1/chat/completions`
+  - `POST /v1/images/generations`
+  - `GET /v1/models`
+- Ollama-like:
+  - `POST /api/chat`
+  - `POST /api/generate`
+
+Start the server:
+
+```bash
+pip install -e .
+python server.py
+```
+
+By default, it listens on `http://0.0.0.0:8000`.
+
+### OpenAI-style example
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "Z-image-turbo",
+    "messages": [
+      {"role": "user", "content": "A cinematic night street scene with neon reflections"}
+    ],
+    "height": 1024,
+    "width": 1024,
+    "num_inference_steps": 8,
+    "guidance_scale": 0.0
+  }'
+```
+
+### Ollama-like example
+
+```bash
+curl http://localhost:8000/api/chat \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "Z-image-turbo",
+    "messages": [
+      {"role": "user", "content": "A watercolor-style mountain village at sunrise"}
+    ],
+    "options": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 8,
+      "guidance_scale": 0.0
+    }
+  }'
+```
+
+The server returns generated image data in base64 (data URL for OpenAI-style chat, base64 list for Ollama-like endpoints).
+
 ## 🚀 Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Tongyi-MAI/Z-Image&type=date&legend=top-left)](https://www.star-history.com/#Tongyi-MAI/Z-Image&type=date&legend=top-left)

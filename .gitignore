@@ -215,3 +215,9 @@ ckpts/
 
 # Ignore generated images
 /*.png
+
+# Frontend
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/.vercel/

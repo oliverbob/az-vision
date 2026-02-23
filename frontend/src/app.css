@@ -1,0 +1,430 @@
+@import "tailwindcss";
+
+:root,
+html[data-theme="dark"] {
+  --app-bg: #040817;
+  --panel-bg: #111827;
+  --header-bg: #030915;
+  --surface-1: #0d1830;
+  --surface-2: #0a1229;
+  --surface-3: #121b33;
+  --surface-4: #172440;
+  --surface-5: #1b253f;
+  --surface-6: #202a44;
+  --surface-7: #111b34;
+  --surface-icon-hover: #0d1830;
+  --border-1: #1b2443;
+  --border-2: #2f3859;
+  --border-3: #25304f;
+  --border-4: #2a3557;
+  --border-5: #2f3a5c;
+  --text-100: #f1f5f9;
+  --text-200: #e2e8f0;
+  --text-300: #cbd5e1;
+  --text-400: #94a3b8;
+  --text-500: #64748b;
+  --composer-action-fg: #e2e8f0;
+  --composer-placeholder: #94a3b8;
+  --composer-action-hover-bg: #283353;
+  --composer-voice-bg: #f1f5f9;
+  --composer-voice-fg: #0f172a;
+  --composer-bg: #1b253f;
+  --sidebar-collapsed-divider: #1b2443;
+  --sidebar-subtle-field-bg: color-mix(in srgb, var(--panel-bg) 84%, #64748b 16%);
+  --sidebar-subtle-field-border: color-mix(in srgb, var(--panel-bg) 56%, #64748b 44%);
+  --sidebar-item-hover-bg: color-mix(in srgb, var(--panel-bg) 70%, #334155 30%);
+  --sidebar-collapsed-hover-bg: color-mix(in srgb, var(--panel-bg) 62%, #0f172a 38%);
+  --hero-card-bg: #0a1229;
+  --hero-card-border: #25304f;
+  --hero-card-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  --hero-chip-bg: #121b33;
+  --hero-chip-border: #2a3557;
+  --hero-chip-hover-bg: #172440;
+  --hero-chip-hover-border: #465b8f;
+  --hero-chip-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+  --hero-chip-hover-shadow: 0 8px 18px rgba(2, 6, 23, 0.22), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  --hero-chip-fg: #cbd5e1;
+  --hero-chip-icon-bg: rgba(148, 163, 184, 0.18);
+  --hero-chip-icon-fg: #dbe7ff;
+  --hero-chip-icon-news-bg: rgba(56, 189, 248, 0.2);
+  --hero-chip-icon-news-fg: #bae6fd;
+  --hero-chip-icon-learn-bg: rgba(99, 102, 241, 0.22);
+  --hero-chip-icon-learn-fg: #c7d2fe;
+  --hero-chip-icon-build-bg: rgba(20, 184, 166, 0.2);
+  --hero-chip-icon-build-fg: #99f6e4;
+  --hero-chip-icon-career-bg: rgba(248, 113, 113, 0.2);
+  --hero-chip-icon-career-fg: #fecaca;
+  --hero-title-fg: #f1f5f9;
+  --hero-subtitle-fg: #94a3b8;
+  --hero-card-title-fg: #f1f5f9;
+  --hero-card-copy-fg: #94a3b8;
+  --hero-card-footnote-fg: #5a67d8;
+  --history-time-fg: #fbbf24;
+  --topbar-icon-fg: #94a3b8;
+  --topbar-icon-hover-fg: #e2e8f0;
+  --model-pill-bg: #0d1830;
+  --model-pill-border: #2f3859;
+  --model-pill-fg: #e2e8f0;
+  --model-pill-caret: #94a3b8;
+}
+
+html[data-theme="light"] {
+  --app-bg: #f6f7fb;
+  --panel-bg: #f3f4f8;
+  --header-bg: #f8f9fc;
+  --surface-1: #eceff5;
+  --surface-2: #f8f9fc;
+  --surface-3: #f1f3f8;
+  --surface-4: #eaedf4;
+  --surface-5: #e6edff;
+  --surface-6: #f2f4f9;
+  --surface-7: #f3f4f8;
+  --surface-icon-hover: #eceff5;
+  --border-1: #e3e7f0;
+  --border-2: #d8dee9;
+  --border-3: #e1e6ef;
+  --border-4: #dce3ee;
+  --border-5: #d4dce8;
+  --text-100: #1f2b44;
+  --text-200: #2f3c56;
+  --text-300: #46546d;
+  --text-400: #60708a;
+  --text-500: #7c889d;
+  --composer-action-fg: #2f3c56;
+  --composer-placeholder: #60708a;
+  --composer-action-hover-bg: #eceff5;
+  --composer-voice-bg: #0f172a;
+  --composer-voice-fg: #f8fafc;
+  --composer-bg: #ffffff;
+  --sidebar-collapsed-divider: #e3e7f0;
+  --sidebar-subtle-field-bg: #eef1f6;
+  --sidebar-subtle-field-border: #d6dde8;
+  --sidebar-item-hover-bg: #e5e9f2;
+  --sidebar-collapsed-hover-bg: #e3e7ef;
+  --hero-card-bg: #fbfcff;
+  --hero-card-border: #dfe6f1;
+  --hero-card-shadow: 0 10px 26px rgba(31, 41, 55, 0.1);
+  --hero-chip-bg: #f3f6fc;
+  --hero-chip-border: #dbe3ef;
+  --hero-chip-hover-bg: #edf2fb;
+  --hero-chip-hover-border: #cad6ea;
+  --hero-chip-shadow: 0 1px 0 rgba(255, 255, 255, 0.95) inset;
+  --hero-chip-hover-shadow: 0 8px 18px rgba(23, 35, 58, 0.08), 0 1px 0 rgba(255, 255, 255, 0.98) inset;
+  --hero-chip-fg: #334155;
+  --hero-chip-icon-bg: #e8edf6;
+  --hero-chip-icon-fg: #4a5a73;
+  --hero-chip-icon-news-bg: #dff1f8;
+  --hero-chip-icon-news-fg: #1f728d;
+  --hero-chip-icon-learn-bg: #e7e8fb;
+  --hero-chip-icon-learn-fg: #4f56b3;
+  --hero-chip-icon-build-bg: #dff3ee;
+  --hero-chip-icon-build-fg: #217d6b;
+  --hero-chip-icon-career-bg: #fde8e8;
+  --hero-chip-icon-career-fg: #b54747;
+  --hero-title-fg: #1f2b44;
+  --hero-subtitle-fg: #5b6b84;
+  --hero-card-title-fg: #1f2b44;
+  --hero-card-copy-fg: #5f6f87;
+  --hero-card-footnote-fg: #5a67d8;
+  --history-time-fg: #f59e0b;
+  --topbar-icon-fg: #4b5563;
+  --topbar-icon-hover-fg: #1f2937;
+  --model-pill-bg: #e8ecf3;
+  --model-pill-border: #d9dee8;
+  --model-pill-fg: #35425b;
+  --model-pill-caret: #4f5f79;
+}
+
+@layer base {
+  html,
+  body {
+    @apply m-0 min-h-full;
+    background: var(--app-bg);
+    color: var(--text-200);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * {
+    @apply box-border;
+  }
+}
+
+.bg-\[\#040817\] {
+  background-color: var(--app-bg) !important;
+}
+
+.bg-\[\#111827\] {
+  background-color: var(--panel-bg) !important;
+}
+
+.bg-\[\#030915\]\/95 {
+  background-color: color-mix(in srgb, var(--header-bg) 95%, transparent) !important;
+}
+
+.bg-\[\#0d1830\] {
+  background-color: var(--surface-1) !important;
+}
+
+.hover\:bg-\[\#0d1830\]:hover {
+  background-color: var(--surface-icon-hover) !important;
+}
+
+.bg-\[\#0a1229\] {
+  background-color: var(--surface-2) !important;
+}
+
+.bg-\[\#121b33\] {
+  background-color: var(--surface-3) !important;
+}
+
+.hover\:bg-\[\#172440\]:hover {
+  background-color: var(--surface-4) !important;
+}
+
+.bg-\[\#1b253f\] {
+  background-color: var(--surface-5) !important;
+}
+
+.bg-\[\#202a44\] {
+  background-color: var(--surface-6) !important;
+}
+
+.bg-\[\#111b34\] {
+  background-color: var(--surface-7) !important;
+}
+
+.border-\[\#1b2443\] {
+  border-color: var(--border-1) !important;
+}
+
+.border-\[\#2f3859\] {
+  border-color: var(--border-2) !important;
+}
+
+.border-\[\#25304f\] {
+  border-color: var(--border-3) !important;
+}
+
+.border-\[\#2a3557\] {
+  border-color: var(--border-4) !important;
+}
+
+.border-\[\#2f3a5c\] {
+  border-color: var(--border-5) !important;
+}
+
+.text-slate-100 {
+  color: var(--text-100) !important;
+}
+
+.text-slate-200 {
+  color: var(--text-200) !important;
+}
+
+.text-slate-300 {
+  color: var(--text-300) !important;
+}
+
+.text-slate-400 {
+  color: var(--text-400) !important;
+}
+
+.text-slate-500 {
+  color: var(--text-500) !important;
+}
+
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #8f97a8 transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #8f97a8;
+  background-clip: content-box;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #a5adbc;
+  background-clip: content-box;
+}
+
+.composer-action {
+  color: var(--composer-action-fg) !important;
+}
+
+.composer-action:hover {
+  background-color: var(--composer-action-hover-bg) !important;
+}
+
+.composer-textarea::placeholder {
+  color: var(--composer-placeholder) !important;
+}
+
+.composer-voice {
+  background-color: var(--composer-voice-bg) !important;
+  color: var(--composer-voice-fg) !important;
+}
+
+.composer-bg {
+  background-color: var(--composer-bg) !important;
+}
+
+.collapsed-sidebar-divider {
+  border-color: var(--sidebar-collapsed-divider) !important;
+}
+
+.sidebar-subtle-field {
+  border-color: var(--sidebar-subtle-field-border) !important;
+  background-color: var(--sidebar-subtle-field-bg) !important;
+}
+
+.hover\:bg-slate-700\/40:hover {
+  background-color: var(--sidebar-item-hover-bg) !important;
+}
+
+.hover\:bg-slate-800\/50:hover {
+  background-color: var(--sidebar-collapsed-hover-bg) !important;
+}
+
+.sidebar-interactive {
+  cursor: pointer !important;
+}
+
+.history-time {
+  color: var(--history-time-fg) !important;
+}
+
+.light-mode-canvas {
+  position: relative;
+}
+
+html[data-theme="light"] .light-mode-canvas {
+  background-image: radial-gradient(920px 320px at 50% -120px, rgba(99, 102, 241, 0.09), transparent 68%);
+}
+
+.hero-info-card {
+  background-color: var(--hero-card-bg) !important;
+  border-color: var(--hero-card-border) !important;
+  box-shadow: var(--hero-card-shadow) !important;
+}
+
+.hero-info-card:hover,
+.hero-suggestion:hover {
+  cursor: pointer;
+}
+
+.hero-suggestion {
+  background-color: var(--hero-chip-bg) !important;
+  border-color: var(--hero-chip-border) !important;
+  box-shadow: var(--hero-chip-shadow) !important;
+  color: var(--hero-chip-fg) !important;
+}
+
+.hero-suggestion:hover {
+  background-color: var(--hero-chip-hover-bg) !important;
+  border-color: var(--hero-chip-hover-border) !important;
+  box-shadow: var(--hero-chip-hover-shadow) !important;
+  transform: translateY(-1px);
+}
+
+.hero-suggestion-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  letter-spacing: 0.01em;
+  font-weight: 500;
+}
+
+.hero-suggestion-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background-color: transparent;
+  color: var(--hero-chip-icon-fg);
+  font-size: 21px;
+  line-height: 1;
+}
+
+.hero-suggestion[data-variant="news"] .hero-suggestion-icon {
+  background-color: transparent;
+  color: var(--hero-chip-icon-news-fg);
+}
+
+.hero-suggestion[data-variant="learn"] .hero-suggestion-icon {
+  background-color: transparent;
+  color: var(--hero-chip-icon-learn-fg);
+}
+
+.hero-suggestion[data-variant="build"] .hero-suggestion-icon {
+  background-color: transparent;
+  color: var(--hero-chip-icon-build-fg);
+}
+
+.hero-suggestion[data-variant="career"] .hero-suggestion-icon {
+  background-color: transparent;
+  color: var(--hero-chip-icon-career-fg);
+}
+
+.hero-title {
+  color: var(--hero-title-fg) !important;
+}
+
+.hero-subtitle {
+  color: var(--hero-subtitle-fg) !important;
+}
+
+.hero-card-title {
+  color: var(--hero-card-title-fg) !important;
+}
+
+.hero-card-copy {
+  color: var(--hero-card-copy-fg) !important;
+}
+
+.hero-card-footnote {
+  color: var(--hero-card-footnote-fg) !important;
+}
+
+.hero-card-icon {
+  color: var(--hero-subtitle-fg) !important;
+}
+
+.hero-highlight {
+  color: var(--hero-title-fg) !important;
+  font-weight: 600;
+}
+
+.hero-link {
+  color: var(--hero-card-footnote-fg) !important;
+}
+
+.topbar-icon {
+  color: var(--topbar-icon-fg) !important;
+}
+
+.topbar-icon:hover {
+  color: var(--topbar-icon-hover-fg) !important;
+}
+
+.model-pill {
+  background-color: var(--model-pill-bg) !important;
+  border-color: var(--model-pill-border) !important;
+  color: var(--model-pill-fg) !important;
+}
+
+.model-pill-caret {
+  color: var(--model-pill-caret) !important;
+}
