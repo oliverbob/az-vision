@@ -74,6 +74,12 @@ If your ministry, church, organization, or technical team is interested in colla
 
 Current illustration concept: **Adam and Eve depicted in the garden**.
 
+![Garden 1](assets/garden1.png)
+![Garden 2](assets/garden2.png)
+![Garden 3](assets/garden3.png)
+![Garden 4](assets/garden4.png)
+![Garden 5](assets/garden5.png)
+
 ### Infrastructure Vision (Self-Hosted Cloud / Home Data Center)
 
 - Power baseline: **20KW**
