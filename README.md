@@ -74,11 +74,17 @@ If your ministry, church, organization, or technical team is interested in colla
 
 Current illustration concept: **Adam and Eve depicted in the garden**.
 
-![Garden 1](assets/garden1.png)
-![Garden 2](assets/garden2.png)
-![Garden 3](assets/garden3.png)
-![Garden 4](assets/garden4.png)
-![Garden 5](assets/garden5.png)
+<table>
+  <tr>
+    <td><img src="assets/garden1.png" alt="Garden 1" /></td>
+    <td><img src="assets/garden2.png" alt="Garden 2" /></td>
+  </tr>
+  <tr>
+    <td><img src="assets/garden3.png" alt="Garden 3" /></td>
+    <td><img src="assets/garden4.png" alt="Garden 4" /></td>
+    <td><img src="assets/garden5.png" alt="Garden 5" /></td>
+  </tr>
+</table>
 
 ### Infrastructure Vision (Self-Hosted Cloud / Home Data Center)
 
