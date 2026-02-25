@@ -420,6 +420,14 @@ curl http://localhost:9090/v1/chat/completions \
 
 `POST /v1/chat/completions` supports SSE when `"stream": true`.
 
+SSE contract:
+
+- Each frame is a valid `data: {json}` line (plus blank separator).
+- Optional side-channel `admin_log` events may appear first.
+- Content emits as OpenAI chunks in `choices[0].delta.content`.
+- Ordering is deterministic: content chunk(s) → finish chunk (`finish_reason: "stop"`) → optional `final` event → `data: [DONE]`.
+- Image payloads are emitted as `{"type":"image_url"}` blocks with URL values (no raw base64 text chunks).
+
 ```bash
 curl http://localhost:9090/v1/chat/completions \
   -H 'content-type: application/json' \
@@ -435,6 +443,42 @@ curl http://localhost:9090/v1/chat/completions \
     "num_inference_steps": 8,
     "guidance_scale": 0.0
   }'
+```
+
+Example SSE frames:
+
+```text
+data: {"admin_log":true,"message":"[chat] generated image response","provider":"zimage_server","model":"Z-image-turbo"}
+
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1730000000,"model":"Z-image-turbo","choices":[{"index":0,"delta":{"content":[{"type":"text","text":"Generated image with Z-image-turbo in 0.56s."}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1730000000,"model":"Z-image-turbo","choices":[{"index":0,"delta":{"content":[{"type":"image_url","image_url":{"url":"http://localhost:9090/v1/images/img_..."}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1730000000,"model":"Z-image-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"final":true,"html":"<p>Generated image with Z-image-turbo in 0.56s.</p><div class=\"mt-4\"><img src=\"http://localhost:9090/v1/images/img_...\"></div>","reasoningHtml":"","contentEmpty":false,"provider":"zimage_server","model":"Z-image-turbo","raw_content":"Generated image with Z-image-turbo in 0.56s."}
+
+data: [DONE]
+```
+
+Non-stream (`"stream": false`) response shape:
+
+```json
+{
+  "choices": [
+    {
+      "message": {
+        "content": [
+          {"type": "text", "text": "Generated image with Z-image-turbo in 0.56s."},
+          {"type": "image_url", "image_url": {"url": "http://localhost:9090/v1/images/img_..."}}
+        ]
+      }
+    }
+  ],
+  "provider": "zimage_server",
+  "html": "<p>...</p>",
+  "raw_content": "..."
+}
 ```
 
 ### Ollama-like example
@@ -480,8 +524,15 @@ curl http://localhost:9090/api/chat \
   }'
 ```
 
-The server returns generated image data in base64 for `POST /v1/images/generations` and for Ollama-like endpoints.
-`POST /v1/chat/completions` now returns OpenAI-compatible text content shape.
+The server returns generated image data in base64 for Ollama-like endpoints.
+`POST /v1/chat/completions` returns OpenAI-compatible `message.content` / `delta.content` structures.
+`POST /v1/images/generations` supports `response_format: "b64_json"` or `"url"`.
+
+Error contract for API routes is JSON with at least one of:
+
+- `detail`
+- `message`
+- `error.message`
 
 ## 🚀 Star History
 

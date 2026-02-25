@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timezone
+import html
 import io
 import json
 import os
@@ -12,8 +13,9 @@ import time
 import uuid
 from typing import Any, Iterator, Literal
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 import torch
 
@@ -92,42 +94,65 @@ def _ndjson_line(payload: dict[str, Any]) -> str:
     return f"{json.dumps(payload, ensure_ascii=False)}\n"
 
 
+def _build_final_html(message_text: str, image_url: str) -> str:
+    safe_text = html.escape(message_text)
+    safe_url = html.escape(image_url, quote=True)
+    return f"<p>{safe_text}</p><div class=\"mt-4\"><img src=\"{safe_url}\"></div>"
+
+
 def _openai_chat_stream_chunks(
     *,
     completion_id: str,
     created: int,
     model: str,
-    content_blocks: list[dict[str, Any]],
+    text_block: dict[str, Any],
+    image_block: dict[str, Any],
+    message_text: str,
+    image_url: str,
+    include_admin_log: bool,
+    include_final_event: bool,
 ) -> Iterator[str]:
-    role_chunk = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [
+    if include_admin_log:
+        yield _sse_line(
             {
-                "index": 0,
-                "delta": {"role": "assistant"},
-                "finish_reason": None,
+                "admin_log": True,
+                "message": "[chat] generated image response",
+                "provider": "zimage_server",
+                "model": model,
             }
-        ],
-    }
-    yield _sse_line(role_chunk)
+        )
 
-    content_chunk = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {"content": content_blocks},
-                "finish_reason": None,
-            }
-        ],
-    }
-    yield _sse_line(content_chunk)
+    yield _sse_line(
+        {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": [text_block]},
+                    "finish_reason": None,
+                }
+            ],
+        }
+    )
+
+    yield _sse_line(
+        {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": [image_block]},
+                    "finish_reason": None,
+                }
+            ],
+        }
+    )
 
     final_chunk = {
         "id": completion_id,
@@ -143,6 +168,20 @@ def _openai_chat_stream_chunks(
         ],
     }
     yield _sse_line(final_chunk)
+
+    if include_final_event:
+        yield _sse_line(
+            {
+                "final": True,
+                "html": _build_final_html(message_text, image_url),
+                "reasoningHtml": "",
+                "contentEmpty": False,
+                "provider": "zimage_server",
+                "model": model,
+                "raw_content": message_text,
+            }
+        )
+
     yield _sse_line("[DONE]")
 
 
@@ -226,7 +265,11 @@ class ZImageService:
         self._park_text_encoder_on_cpu = os.environ.get("ZIMAGE_PARK_TEXT_ENCODER_ON_CPU", "0") == "1"
         self._offload_text_encoder = os.environ.get("ZIMAGE_OFFLOAD_TEXT_ENCODER", "0") == "1"
         self._clear_cuda_cache_per_request = os.environ.get("ZIMAGE_CLEAR_CUDA_CACHE_PER_REQUEST", "0") == "1"
+        self._max_cached_images = max(1, int(os.environ.get("ZIMAGE_MAX_CACHED_IMAGES", "64")))
         self._lock = threading.Lock()
+        self._image_lock = threading.Lock()
+        self._image_cache: dict[str, bytes] = {}
+        self._image_cache_order: list[str] = []
 
     def _lazy_load(self) -> None:
         if self._components is not None:
@@ -321,6 +364,21 @@ class ZImageService:
 
             raise RuntimeError("Generation failed with unknown error.")
 
+    def cache_image_base64(self, image_b64: str) -> str:
+        image_id = f"img_{uuid.uuid4().hex}"
+        image_bytes = base64.b64decode(image_b64)
+        with self._image_lock:
+            self._image_cache[image_id] = image_bytes
+            self._image_cache_order.append(image_id)
+            while len(self._image_cache_order) > self._max_cached_images:
+                oldest = self._image_cache_order.pop(0)
+                self._image_cache.pop(oldest, None)
+        return image_id
+
+    def get_cached_image(self, image_id: str) -> bytes | None:
+        with self._image_lock:
+            return self._image_cache.get(image_id)
+
 
 class OpenAIChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
@@ -340,6 +398,8 @@ class OpenAIChatCompletionsRequest(BaseModel):
     num_inference_steps: int = 8
     guidance_scale: float = 0.0
     seed: int | None = None
+    include_admin_log: bool = False
+    include_final_event: bool = True
 
 
 class OpenAIImageGenerationRequest(BaseModel):
@@ -384,6 +444,22 @@ app = FastAPI(title="Z-Image API", version="0.1.0")
 service = ZImageService()
 
 
+@app.exception_handler(HTTPException)
+def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    detail = exc.detail if exc.detail is not None else "Request failed"
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(Exception)
+def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(status_code=500, content={"message": f"Internal server error: {exc}"})
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -403,8 +479,16 @@ def list_models() -> dict[str, Any]:
     }
 
 
+@app.get("/v1/images/{image_id}")
+def get_generated_image(image_id: str) -> Response:
+    image_bytes = service.get_cached_image(image_id)
+    if image_bytes is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    return Response(content=image_bytes, media_type="image/png")
+
+
 @app.post("/v1/chat/completions", response_model=None)
-def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any] | StreamingResponse:
+def openai_chat_completions(request: Request, body: OpenAIChatCompletionsRequest) -> dict[str, Any] | StreamingResponse:
 
     prompt = _build_prompt_from_openai_messages(body.messages)
     if not prompt:
@@ -427,18 +511,21 @@ def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any
     created = int(time.time())
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     message_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
-    data_url = f"data:image/png;base64,{image_b64}"
+    image_id = service.cache_image_base64(image_b64)
+    image_url = f"{str(request.base_url).rstrip('/')}/v1/images/{image_id}"
+    text_block = {
+        "type": "text",
+        "text": message_text,
+    }
+    image_block = {
+        "type": "image_url",
+        "image_url": {
+            "url": image_url,
+        },
+    }
     content_blocks = [
-        {
-            "type": "text",
-            "text": message_text,
-        },
-        {
-            "type": "image_url",
-            "image_url": {
-                "url": data_url,
-            },
-        },
+        text_block,
+        image_block,
     ]
 
     if body.stream:
@@ -447,7 +534,12 @@ def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any
                 completion_id=completion_id,
                 created=created,
                 model=body.model,
-                content_blocks=content_blocks,
+                text_block=text_block,
+                image_block=image_block,
+                message_text=message_text,
+                image_url=image_url,
+                include_admin_log=body.include_admin_log,
+                include_final_event=body.include_final_event,
             ),
             media_type="text/event-stream",
             headers={
@@ -477,11 +569,14 @@ def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any
             "completion_tokens": 0,
             "total_tokens": 0,
         },
+        "provider": "zimage_server",
+        "html": _build_final_html(message_text, image_url),
+        "raw_content": message_text,
     }
 
 
 @app.post("/v1/images/generations")
-def openai_image_generations(body: OpenAIImageGenerationRequest) -> dict[str, Any]:
+def openai_image_generations(request: Request, body: OpenAIImageGenerationRequest) -> dict[str, Any]:
     if body.n != 1:
         raise HTTPException(status_code=400, detail="Only n=1 is supported.")
 
@@ -505,9 +600,10 @@ def openai_image_generations(body: OpenAIImageGenerationRequest) -> dict[str, An
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
     if body.response_format == "url":
+        image_id = service.cache_image_base64(image_b64)
         return {
             "created": int(time.time()),
-            "data": [{"url": f"data:image/png;base64,{image_b64}"}],
+            "data": [{"url": f"{str(request.base_url).rstrip('/')}/v1/images/{image_id}"}],
         }
 
     return {
