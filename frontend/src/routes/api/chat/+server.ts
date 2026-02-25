@@ -21,14 +21,28 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       return json({ error: "Message is required" }, { status: 400 });
     }
 
-    const modelChatUrl = env.MODEL_CHAT_URL?.trim() || "http://127.0.0.1:9090/api/chat";
+    const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim() || "http://127.0.0.1:9090/api/chat";
+    let configuredPath = "/api/chat";
+    try {
+      const parsedConfiguredUrl = new URL(configuredModelChatUrl);
+      configuredPath = parsedConfiguredUrl.pathname || "/api/chat";
+    } catch {
+      configuredPath = configuredModelChatUrl.includes("/v1/chat/completions")
+        ? "/v1/chat/completions"
+        : "/api/chat";
+    }
+
+    const modelChatPath = configuredPath.includes("/v1/chat/completions")
+      ? "/v1/chat/completions"
+      : "/api/chat";
+    const modelChatUrl = `http://127.0.0.1:9090${modelChatPath}`;
     const modelName = env.MODEL_NAME?.trim() || "Z-image-turbo";
     const defaultHeight = Number(env.ZIMAGE_HEIGHT ?? "512");
     const defaultWidth = Number(env.ZIMAGE_WIDTH ?? "512");
     const defaultSteps = Number(env.ZIMAGE_STEPS ?? "4");
     const defaultGuidance = Number(env.ZIMAGE_GUIDANCE_SCALE ?? "0.0");
 
-    const isOllamaApi = modelChatUrl.includes("/api/chat");
+    const isOllamaApi = modelChatPath === "/api/chat";
 
     const upstreamPayload = isOllamaApi
       ? {
@@ -70,45 +84,22 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
         };
 
-    const alternateUrl = modelChatUrl.includes("127.0.0.1")
-      ? modelChatUrl.replace("127.0.0.1", "localhost")
-      : modelChatUrl.includes("localhost")
-        ? modelChatUrl.replace("localhost", "127.0.0.1")
-        : null;
-
-    const targetUrls = [modelChatUrl, alternateUrl].filter((value, index, array): value is string => {
-      return Boolean(value) && array.indexOf(value) === index;
-    });
-
-    const transportErrors: string[] = [];
-    let upstream: Response | null = null;
-    let selectedUrl = targetUrls[0] ?? modelChatUrl;
-
-    for (const targetUrl of targetUrls) {
-      try {
-        const response = await fetch(targetUrl, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(upstreamPayload),
-        });
-
-        upstream = response;
-        selectedUrl = targetUrl;
-        break;
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        transportErrors.push(`${targetUrl}: ${errorMessage}`);
-      }
-    }
-
-    if (!upstream) {
+    let upstream: Response;
+    try {
+      upstream = await fetch(modelChatUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(upstreamPayload),
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return json(
         {
           error: "Model backend is unreachable",
           target: modelChatUrl,
-          attempts: transportErrors,
+          details: errorMessage,
         },
         { status: 502 },
       );
@@ -119,7 +110,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       return json(
         {
           error: errorText || `Upstream error: ${upstream.status}`,
-          target: selectedUrl,
+          target: modelChatUrl,
         },
         { status: 502 },
       );
