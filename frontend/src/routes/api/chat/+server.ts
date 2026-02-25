@@ -21,31 +21,68 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       return json({ error: "Message is required" }, { status: 400 });
     }
 
-    const modelChatUrl = "http://127.0.0.1:9090/v1/chat/completions";
+    const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim() || "http://127.0.0.1:9090/v1/chat/completions";
+    let modelChatUrl = "http://127.0.0.1:9090/v1/chat/completions";
+    try {
+      const configuredUrl = new URL(configuredModelChatUrl);
+      const upstreamPath = configuredUrl.pathname.includes("/api/chat")
+        ? "/api/chat"
+        : "/v1/chat/completions";
+      const protocol = configuredUrl.protocol || "http:";
+      const host = configuredUrl.hostname || "127.0.0.1";
+      modelChatUrl = `${protocol}//${host}:9090${upstreamPath}`;
+    } catch {
+      modelChatUrl = configuredModelChatUrl.includes("/api/chat")
+        ? "http://127.0.0.1:9090/api/chat"
+        : "http://127.0.0.1:9090/v1/chat/completions";
+    }
     const modelName = env.MODEL_NAME?.trim() || "Z-image-turbo";
     const defaultHeight = Number(env.ZIMAGE_HEIGHT ?? "512");
     const defaultWidth = Number(env.ZIMAGE_WIDTH ?? "512");
     const defaultSteps = Number(env.ZIMAGE_STEPS ?? "4");
     const defaultGuidance = Number(env.ZIMAGE_GUIDANCE_SCALE ?? "0.0");
 
-    const upstreamPayload = {
-      model: modelName,
-      messages: [
-        ...history.map((entry) => ({
-          role: entry.role,
-          content: entry.content,
-        })),
-        {
-          role: "user",
-          content: message,
-        },
-      ],
-      stream: false,
-      height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
-      width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
-      num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
-      guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
-    };
+    const isOllamaApi = modelChatUrl.includes("/api/chat");
+
+    const upstreamPayload = isOllamaApi
+      ? {
+          model: modelName,
+          messages: [
+            ...history.map((entry) => ({
+              role: entry.role,
+              content: entry.content,
+            })),
+            {
+              role: "user",
+              content: message,
+            },
+          ],
+          options: {
+            height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
+            width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
+            num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
+            guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
+          },
+          stream: false,
+        }
+      : {
+          model: modelName,
+          messages: [
+            ...history.map((entry) => ({
+              role: entry.role,
+              content: entry.content,
+            })),
+            {
+              role: "user",
+              content: message,
+            },
+          ],
+          stream: false,
+          height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
+          width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
+          num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
+          guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
+        };
 
     let upstream: Response;
     try {
@@ -91,7 +128,18 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
             ? data.response
             : JSON.stringify(data);
 
-    const imageUrl = null;
+    const imageBase64 =
+      typeof data?.message?.images?.[0] === "string"
+        ? data.message.images[0]
+        : typeof data?.images?.[0] === "string"
+          ? data.images[0]
+          : null;
+
+    const imageUrl = imageBase64
+      ? imageBase64.startsWith("data:image")
+        ? imageBase64
+        : `data:image/png;base64,${imageBase64}`
+      : null;
 
     return json({ reply, imageUrl });
   } catch (error) {
