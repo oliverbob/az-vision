@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import platform
+import grp
+import pwd
 import shutil
 import signal
 import socket
@@ -36,6 +38,40 @@ RUN_FRONTEND_BUILD = os.environ.get("RUN_FRONTEND_BUILD", "1") == "1"
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, check=True)
+
+
+def _is_path_writable(path: Path) -> bool:
+    if path.exists():
+        return os.access(path, os.W_OK)
+    parent = path.parent
+    return parent.exists() and os.access(parent, os.W_OK)
+
+
+def ensure_workspace_permissions() -> None:
+    paths_to_check = [
+        ROOT_DIR / ".backend.log",
+        ROOT_DIR / ".frontend.log",
+        ROOT_DIR / ".backend.pid",
+        ROOT_DIR / ".frontend.pid",
+        FRONTEND_DIR / ".svelte-kit",
+        FRONTEND_DIR / "node_modules",
+    ]
+
+    blocked = [path for path in paths_to_check if path.exists() and not _is_path_writable(path)]
+    if not blocked:
+        return
+
+    blocked_list = "\n".join(f"- {path}" for path in blocked)
+    current_user = pwd.getpwuid(os.getuid()).pw_name
+    current_group = grp.getgrgid(os.getgid()).gr_name
+    owner_hint = f"{current_user}:{current_group}"
+    raise PermissionError(
+        "Detected files or folders that are not writable by the current user.\n"
+        "This usually happens after running the launcher with sudo.\n"
+        f"Blocked paths:\n{blocked_list}\n\n"
+        "Run this once, then retry ./run.sh:\n"
+        f"  sudo chown -R {owner_hint} {ROOT_DIR}\n"
+    )
 
 
 def check_output(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
@@ -278,6 +314,7 @@ def main() -> int:
     print(f"Platform: {platform.system()} {platform.release()}")
 
     stop_existing_services()
+    ensure_workspace_permissions()
     print("Running preflight checks...")
     ensure_python_bootstrap()
     ensure_frontend_bootstrap()
