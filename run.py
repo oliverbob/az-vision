@@ -56,6 +56,29 @@ def is_port_open(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
+def wait_for_port(port: int, timeout_seconds: float) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if is_port_open(port):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def tail_file(path: Path, lines: int = 80) -> str:
+    if not path.exists():
+        return f"(log file not found: {path})"
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return f"(failed to read log file {path}: {exc})"
+
+    all_lines = content.splitlines()
+    if not all_lines:
+        return "(log file is empty)"
+    return "\n".join(all_lines[-lines:])
+
+
 def ensure_venv() -> None:
     if VENV_PYTHON.exists():
         return
@@ -216,6 +239,14 @@ def start_backend() -> None:
 
     pid = _spawn_detached([str(VENV_PYTHON), "server.py"], ROOT_DIR, BACKEND_LOG, env)
     BACKEND_PID.write_text(str(pid), encoding="utf-8")
+
+    if not wait_for_port(BACKEND_PORT, timeout_seconds=20):
+        print(f"Backend failed to bind on :{BACKEND_PORT}. Last log lines:")
+        print("-" * 80)
+        print(tail_file(BACKEND_LOG, lines=120))
+        print("-" * 80)
+        raise RuntimeError(f"Backend failed to start on port {BACKEND_PORT}")
+
     print(f"Backend started. Log: {BACKEND_LOG}")
 
 
@@ -231,6 +262,14 @@ def start_frontend() -> None:
         env,
     )
     FRONTEND_PID.write_text(str(pid), encoding="utf-8")
+
+    if not wait_for_port(FRONTEND_PORT, timeout_seconds=20):
+        print(f"Frontend failed to bind on :{FRONTEND_PORT}. Last log lines:")
+        print("-" * 80)
+        print(tail_file(FRONTEND_LOG, lines=120))
+        print("-" * 80)
+        raise RuntimeError(f"Frontend failed to start on port {FRONTEND_PORT}")
+
     print(f"Frontend started. Log: {FRONTEND_LOG}")
 
 
