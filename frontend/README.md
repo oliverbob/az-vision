@@ -52,3 +52,31 @@ npm run dev -- --port 4040
 ```
 
 Open: `http://localhost:4040`
+
+## Reverse proxy (Caddy HTTPS)
+
+If you expose `npm run dev` through Caddy and see WebSocket/HMR errors (`Failed to connect to websocket`, `502` on `+page.svelte`), set these in `frontend/.env`:
+
+```dotenv
+VITE_HMR_HOST=your-domain.example
+VITE_HMR_PROTOCOL=wss
+VITE_HMR_CLIENT_PORT=443
+```
+
+Then restart the frontend dev server.
+
+Minimal Caddy example:
+
+```caddyfile
+your-domain.example {
+  encode gzip zstd
+  reverse_proxy 127.0.0.1:4040
+}
+```
+
+For public hosting, prefer production mode instead of Vite dev:
+
+```bash
+npm run build
+npm run preview -- --host 0.0.0.0 --port 4040
+```
