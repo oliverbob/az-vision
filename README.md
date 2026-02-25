@@ -456,7 +456,8 @@ curl http://localhost:9090/api/chat \
   }'
 ```
 
-The server returns generated image data in base64 (data URL for OpenAI-style chat, base64 list for Ollama-like endpoints).
+The server returns generated image data in base64 for `POST /v1/images/generations` and for Ollama-like endpoints.
+`POST /v1/chat/completions` now returns OpenAI-compatible text content shape.
 
 ## 🚀 Star History
 
