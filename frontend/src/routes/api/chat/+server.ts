@@ -52,23 +52,74 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           stream: false,
         }
       : {
-          message,
-          history,
+          model: modelName,
+          messages: [
+            ...history.map((entry) => ({
+              role: entry.role,
+              content: entry.content,
+            })),
+            {
+              role: "user",
+              content: message,
+            },
+          ],
+          stream: false,
+          height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
+          width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
+          num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
+          guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
         };
 
-    const upstream = await fetch(modelChatUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(upstreamPayload),
+    const alternateUrl = modelChatUrl.includes("127.0.0.1")
+      ? modelChatUrl.replace("127.0.0.1", "localhost")
+      : modelChatUrl.includes("localhost")
+        ? modelChatUrl.replace("localhost", "127.0.0.1")
+        : null;
+
+    const targetUrls = [modelChatUrl, alternateUrl].filter((value, index, array): value is string => {
+      return Boolean(value) && array.indexOf(value) === index;
     });
+
+    const transportErrors: string[] = [];
+    let upstream: Response | null = null;
+    let selectedUrl = targetUrls[0] ?? modelChatUrl;
+
+    for (const targetUrl of targetUrls) {
+      try {
+        const response = await fetch(targetUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(upstreamPayload),
+        });
+
+        upstream = response;
+        selectedUrl = targetUrl;
+        break;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        transportErrors.push(`${targetUrl}: ${errorMessage}`);
+      }
+    }
+
+    if (!upstream) {
+      return json(
+        {
+          error: "Model backend is unreachable",
+          target: modelChatUrl,
+          attempts: transportErrors,
+        },
+        { status: 502 },
+      );
+    }
 
     if (!upstream.ok) {
       const errorText = await upstream.text();
       return json(
         {
           error: errorText || `Upstream error: ${upstream.status}`,
+          target: selectedUrl,
         },
         { status: 502 },
       );
@@ -78,6 +129,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     const reply =
       typeof data?.reply === "string"
         ? data.reply
+        : typeof data?.choices?.[0]?.message?.content === "string"
+          ? data.choices[0].message.content
         : typeof data?.message?.content === "string"
           ? data.message.content
           : typeof data?.response === "string"
@@ -100,6 +153,6 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     return json({ reply, imageUrl });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown server error";
-    return json({ error: message }, { status: 500 });
+    return json({ error: message }, { status: 502 });
   }
 };
