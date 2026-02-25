@@ -405,7 +405,7 @@ def list_models() -> dict[str, Any]:
     }
 
 
-@app.post("/v1/chat/completions")
+@app.post("/v1/chat/completions", response_model=None)
 def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any] | StreamingResponse:
 
     prompt = _build_prompt_from_openai_messages(body.messages)
@@ -505,7 +505,7 @@ def openai_image_generations(body: OpenAIImageGenerationRequest) -> dict[str, An
     }
 
 
-@app.post("/api/chat")
+@app.post("/api/chat", response_model=None)
 def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
 
     prompt = _build_prompt_from_ollama_messages(body.messages)
@@ -562,7 +562,7 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
     }
 
 
-@app.post("/api/generate")
+@app.post("/api/generate", response_model=None)
 def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any] | StreamingResponse:
 
     options = body.options or {}
