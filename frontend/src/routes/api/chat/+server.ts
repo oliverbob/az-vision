@@ -9,16 +9,43 @@ type IncomingChatMessage = {
 
 export const POST: RequestHandler = async ({ request, fetch }) => {
   try {
-    const body = (await request.json()) as {
-      message?: string;
-      history?: IncomingChatMessage[];
-    };
+    const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+    const isMultipart = contentType.includes("multipart/form-data");
 
-    const message = body.message?.trim() ?? "";
-    const history = Array.isArray(body.history) ? body.history : [];
+    let message = "";
+    let history: IncomingChatMessage[] = [];
+    let attachedImage: File | null = null;
 
-    if (!message) {
-      return json({ error: "Message is required" }, { status: 400 });
+    if (isMultipart) {
+      const form = await request.formData();
+      message = String(form.get("message") ?? "").trim();
+
+      const rawHistory = form.get("history");
+      if (typeof rawHistory === "string") {
+        try {
+          const parsed = JSON.parse(rawHistory) as IncomingChatMessage[];
+          history = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          history = [];
+        }
+      }
+
+      const maybeImage = form.get("image");
+      if (maybeImage instanceof File && maybeImage.size > 0) {
+        attachedImage = maybeImage;
+      }
+    } else {
+      const body = (await request.json()) as {
+        message?: string;
+        history?: IncomingChatMessage[];
+      };
+
+      message = body.message?.trim() ?? "";
+      history = Array.isArray(body.history) ? body.history : [];
+    }
+
+    if (!message && !attachedImage) {
+      return json({ error: "Message or image is required" }, { status: 400 });
     }
 
     const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim();
@@ -34,6 +61,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     };
 
     if (!configuredModelChatUrl) {
+      if (attachedImage) {
+        return gracefulBackendReply("MODEL_CHAT_URL is not configured");
+      }
       return json({ reply: `Echo: ${message}` });
     }
 
@@ -42,6 +72,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       : `http://${configuredModelChatUrl}`;
 
     let modelChatUrl: string;
+    let modelImageEditUrl: string;
     try {
       const configuredUrl = new URL(normalizedRawUrl);
       const upstreamPath = configuredUrl.pathname.includes("/api/chat")
@@ -52,7 +83,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       if (!host) {
         return gracefulBackendReply("MODEL_CHAT_URL must include a valid host", configuredModelChatUrl);
       }
-      modelChatUrl = `${protocol}//${host}:9090${upstreamPath}`;
+      const baseUrl = `${protocol}//${host}:9090`;
+      modelChatUrl = `${baseUrl}${upstreamPath}`;
+      modelImageEditUrl = `${baseUrl}/v1/images/edits`;
     } catch {
       return gracefulBackendReply("Invalid MODEL_CHAT_URL", configuredModelChatUrl);
     }
@@ -62,60 +95,78 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     const defaultSteps = Number(env.ZIMAGE_STEPS ?? "4");
     const defaultGuidance = Number(env.ZIMAGE_GUIDANCE_SCALE ?? "0.0");
 
-    const isOllamaApi = modelChatUrl.includes("/api/chat");
-
-    const upstreamPayload = isOllamaApi
-      ? {
-          model: modelName,
-          messages: [
-            ...history.map((entry) => ({
-              role: entry.role,
-              content: entry.content,
-            })),
-            {
-              role: "user",
-              content: message,
-            },
-          ],
-          options: {
-            height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
-            width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
-            num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
-            guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
-          },
-          stream: false,
-        }
-      : {
-          model: modelName,
-          messages: [
-            ...history.map((entry) => ({
-              role: entry.role,
-              content: entry.content,
-            })),
-            {
-              role: "user",
-              content: message,
-            },
-          ],
-          stream: false,
-          height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
-          width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
-          num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
-          guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
-        };
-
     let upstream: Response;
     try {
-      upstream = await fetch(modelChatUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(upstreamPayload),
-      });
+      if (attachedImage) {
+        const imageEditPayload = new FormData();
+        imageEditPayload.set("model", modelName);
+        imageEditPayload.set("prompt", message || "Please edit this image.");
+        imageEditPayload.set("n", "1");
+        imageEditPayload.set(
+          "size",
+          `${Number.isFinite(defaultWidth) ? defaultWidth : 512}x${Number.isFinite(defaultHeight) ? defaultHeight : 512}`,
+        );
+        imageEditPayload.set("response_format", "b64_json");
+        imageEditPayload.set("image", attachedImage, attachedImage.name || "image.png");
+
+        upstream = await fetch(modelImageEditUrl, {
+          method: "POST",
+          body: imageEditPayload,
+        });
+      } else {
+        const isOllamaApi = modelChatUrl.includes("/api/chat");
+
+        const upstreamPayload = isOllamaApi
+          ? {
+              model: modelName,
+              messages: [
+                ...history.map((entry) => ({
+                  role: entry.role,
+                  content: entry.content,
+                })),
+                {
+                  role: "user",
+                  content: message,
+                },
+              ],
+              options: {
+                height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
+                width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
+                num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
+                guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
+              },
+              stream: false,
+            }
+          : {
+              model: modelName,
+              messages: [
+                ...history.map((entry) => ({
+                  role: entry.role,
+                  content: entry.content,
+                })),
+                {
+                  role: "user",
+                  content: message,
+                },
+              ],
+              stream: false,
+              height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
+              width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
+              num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
+              guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
+            };
+
+        upstream = await fetch(modelChatUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(upstreamPayload),
+        });
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return gracefulBackendReply(errorMessage, modelChatUrl);
+      return gracefulBackendReply(errorMessage, attachedImage ? modelImageEditUrl : modelChatUrl);
     }
 
     if (!upstream.ok) {
@@ -170,16 +221,20 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           : typeof openaiTextFromBlocks === "string" && openaiTextFromBlocks.length > 0
             ? openaiTextFromBlocks
           : typeof data?.message?.content === "string"
-          ? data.message.content
-          : typeof data?.response === "string"
-            ? data.response
-            : JSON.stringify(data);
+            ? data.message.content
+            : typeof data?.response === "string"
+              ? data.response
+              : attachedImage
+                ? "Image generation completed."
+                : JSON.stringify(data);
 
     const imageBase64 =
       typeof data?.message?.images?.[0] === "string"
         ? data.message.images[0]
         : typeof data?.images?.[0] === "string"
           ? data.images[0]
+          : typeof data?.data?.[0]?.b64_json === "string"
+            ? data.data[0].b64_json
           : null;
 
     const imageUrlFromOpenAIBlocks =
@@ -193,6 +248,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         : `data:image/png;base64,${imageBase64}`
       : typeof imageUrlFromOpenAIBlocks === "string"
         ? imageUrlFromOpenAIBlocks
+      : typeof data?.data?.[0]?.url === "string"
+        ? data.data[0].url
       : null;
 
     return json({ reply, imageUrl });

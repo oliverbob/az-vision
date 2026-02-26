@@ -6,6 +6,7 @@
     content: string;
     createdAt: number;
     imageUrl?: string;
+    attachmentName?: string;
   };
 
   let messageText = "";
@@ -14,8 +15,11 @@
   let drawerOpen = false;
   let conversationScroller: HTMLDivElement | null = null;
   let composerTextarea: HTMLTextAreaElement | null = null;
+  let imageInput: HTMLInputElement | null = null;
   let theme: "dark" | "light" = "dark";
   let messages: ChatMessage[] = [];
+  let selectedImageFile: File | null = null;
+  let selectedImagePreview = "";
 
   const suggestions = [
     { label: "Latest AI news", icon: "🔎", variant: "news" },
@@ -44,33 +48,51 @@
 
   async function sendMessage() {
     const text = messageText.trim();
-    if (!text || loading) {
+    if ((!text && !selectedImageFile) || loading) {
       return;
     }
 
+    const history = [...messages];
+    const fileToSend = selectedImageFile;
+    const previewToSend = selectedImagePreview;
+
     const nextUserMessage = {
       role: "user",
-      content: text,
+      content: text || "Please edit this image.",
       createdAt: Date.now(),
+      imageUrl: previewToSend || undefined,
+      attachmentName: fileToSend?.name,
     } as const;
 
     messages = [...messages, nextUserMessage];
     messageText = "";
+    clearSelectedImage();
     resetComposerHeight();
     error = "";
     loading = true;
 
     try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          message: text,
-          history: messages,
-        }),
-      });
+      const response = fileToSend
+        ? await fetch("/api/chat", {
+            method: "POST",
+            body: (() => {
+              const form = new FormData();
+              form.set("message", text);
+              form.set("history", JSON.stringify(history));
+              form.set("image", fileToSend);
+              return form;
+            })(),
+          })
+        : await fetch("/api/chat", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              message: text,
+              history,
+            }),
+          });
 
       if (!response.ok) {
         const details = await response.text();
@@ -110,6 +132,36 @@
   function useSuggestion(value: string) {
     messageText = value;
     resizeComposer();
+  }
+
+  function openFilePicker() {
+    imageInput?.click();
+  }
+
+  function clearSelectedImage() {
+    if (selectedImagePreview.startsWith("blob:")) {
+      URL.revokeObjectURL(selectedImagePreview);
+    }
+    selectedImageFile = null;
+    selectedImagePreview = "";
+    if (imageInput) {
+      imageInput.value = "";
+    }
+  }
+
+  function onImageSelected(event: Event) {
+    const target = event.currentTarget as HTMLInputElement;
+    const file = target.files?.[0] ?? null;
+    if (selectedImagePreview.startsWith("blob:")) {
+      URL.revokeObjectURL(selectedImagePreview);
+    }
+    if (!file || !file.type.startsWith("image/")) {
+      clearSelectedImage();
+      return;
+    }
+
+    selectedImageFile = file;
+    selectedImagePreview = URL.createObjectURL(file);
   }
 
   function resizeComposer() {
@@ -531,6 +583,7 @@
             type="button"
             aria-label="Attach file"
             class="oa-tooltip-custom composer-action grid size-10 cursor-pointer place-items-center rounded-full text-3xl leading-none"
+            on:click={openFilePicker}
           >
             +
             <span class="oa-tooltip-bubble" role="tooltip" aria-hidden="true">
@@ -539,16 +592,45 @@
             </span>
           </button>
 
-          <textarea
-            bind:this={composerTextarea}
-            bind:value={messageText}
-            placeholder="Ask anything..."
-            rows="1"
-            on:keydown={onKeydown}
-            on:input={resizeComposer}
-            disabled={loading}
-            class="sidebar-scroll composer-bg composer-textarea min-h-10 max-h-52 w-full resize-none rounded-2xl border border-transparent px-2 py-2 text-[1.05rem] leading-6 text-slate-100 outline-none ring-0 focus:border-transparent focus:outline-none focus:ring-0"
-          ></textarea>
+          <input
+            bind:this={imageInput}
+            type="file"
+            accept="image/*"
+            class="hidden"
+            on:change={onImageSelected}
+          />
+
+          <div class="min-w-0">
+            {#if selectedImageFile}
+              <div class="mb-2 flex items-center gap-2 rounded-xl border border-[#2a3557] bg-[#111b34] px-2 py-2">
+                {#if selectedImagePreview}
+                  <img src={selectedImagePreview} alt="Selected attachment preview" class="size-12 rounded-md border border-[#2a3557] object-cover" />
+                {/if}
+                <div class="min-w-0 flex-1 text-sm text-slate-300">
+                  <p class="truncate">{selectedImageFile.name}</p>
+                </div>
+                <button
+                  type="button"
+                  class="grid size-7 place-items-center rounded-md text-slate-300 hover:bg-slate-700/50"
+                  aria-label="Remove selected image"
+                  on:click={clearSelectedImage}
+                >
+                  ✕
+                </button>
+              </div>
+            {/if}
+
+            <textarea
+              bind:this={composerTextarea}
+              bind:value={messageText}
+              placeholder={selectedImageFile ? "Describe your edit..." : "Ask anything..."}
+              rows="1"
+              on:keydown={onKeydown}
+              on:input={resizeComposer}
+              disabled={loading}
+              class="sidebar-scroll composer-bg composer-textarea min-h-10 max-h-52 w-full resize-none rounded-2xl border border-transparent px-2 py-2 text-[1.05rem] leading-6 text-slate-100 outline-none ring-0 focus:border-transparent focus:outline-none focus:ring-0"
+            ></textarea>
+          </div>
 
           <div class="flex items-center gap-1">
             <button
@@ -565,7 +647,7 @@
               </svg>
             </button>
 
-            {#if messageText.trim()}
+            {#if messageText.trim() || selectedImageFile}
               <button
                 type="submit"
                 disabled={loading}
