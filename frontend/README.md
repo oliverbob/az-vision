@@ -29,6 +29,8 @@ The local frontend API route is a caller/proxy only. It forwards requests to Ope
 
 `POST /v1/images/edits`
 
+You can now attach one or more images in the UI. If multiple images are attached, they are sent together and combined server-side before instruction-based editing.
+
 The frontend route returns:
 
 ```json

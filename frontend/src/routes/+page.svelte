@@ -28,8 +28,8 @@
   let messages: ChatMessage[] = [];
   let conversationThreads: ConversationThread[] = [];
   let activeConversationId = "";
-  let selectedImageFile: File | null = null;
-  let selectedImagePreview = "";
+  let selectedImageFiles: File[] = [];
+  let selectedImagePreviews: string[] = [];
   let hasMounted = false;
 
   const conversationStorageKey = "zimage-conversations-v1";
@@ -146,20 +146,26 @@
 
   async function sendMessage() {
     const text = messageText.trim();
-    if ((!text && !selectedImageFile) || loading) {
+    if ((!text && selectedImageFiles.length === 0) || loading) {
       return;
     }
 
     const history = [...messages];
-    const fileToSend = selectedImageFile;
-    const previewToSend = selectedImagePreview;
+    const filesToSend = [...selectedImageFiles];
+    const previewsToSend = [...selectedImagePreviews];
+    const attachmentLabel =
+      filesToSend.length === 1
+        ? filesToSend[0].name
+        : filesToSend.length > 1
+          ? `${filesToSend.length} images`
+          : undefined;
 
     const nextUserMessage = {
       role: "user",
       content: text || "Please edit this image.",
       createdAt: Date.now(),
-      imageUrl: previewToSend || undefined,
-      attachmentName: fileToSend?.name,
+      imageUrl: previewsToSend[0] || undefined,
+      attachmentName: attachmentLabel,
     } as const;
 
     setMessages([...messages, nextUserMessage]);
@@ -172,14 +178,16 @@
     loading = true;
 
     try {
-      const response = fileToSend
+      const response = filesToSend.length > 0
         ? await fetch("/api/chat", {
             method: "POST",
             body: (() => {
               const form = new FormData();
               form.set("message", text);
               form.set("history", JSON.stringify(history));
-              form.set("image", fileToSend);
+              for (const file of filesToSend) {
+                form.append("image", file, file.name || "image.png");
+              }
               return form;
             })(),
           })
@@ -251,8 +259,8 @@
   }
 
   function clearSelectedImage() {
-    selectedImageFile = null;
-    selectedImagePreview = "";
+    selectedImageFiles = [];
+    selectedImagePreviews = [];
     if (imageInput) {
       imageInput.value = "";
     }
@@ -260,15 +268,15 @@
 
   async function onImageSelected(event: Event) {
     const target = event.currentTarget as HTMLInputElement;
-    const file = target.files?.[0] ?? null;
-    if (!file || !file.type.startsWith("image/")) {
+    const files = Array.from(target.files ?? []).filter((file) => file.type.startsWith("image/"));
+    if (files.length === 0) {
       clearSelectedImage();
       return;
     }
 
-    selectedImageFile = file;
+    selectedImageFiles = files;
     try {
-      selectedImagePreview = await fileToDataUrl(file);
+      selectedImagePreviews = await Promise.all(files.map((file) => fileToDataUrl(file)));
     } catch {
       clearSelectedImage();
     }
@@ -848,18 +856,21 @@
             bind:this={imageInput}
             type="file"
             accept="image/*"
+            multiple
             class="hidden"
             on:change={onImageSelected}
           />
 
           <div class="min-w-0">
-            {#if selectedImageFile}
+            {#if selectedImageFiles.length > 0}
               <div class="mb-2 flex items-center gap-2 rounded-xl border border-[#2a3557] bg-[#111b34] px-2 py-2">
-                {#if selectedImagePreview}
-                  <img src={selectedImagePreview} alt="Selected attachment preview" class="size-12 rounded-md border border-[#2a3557] object-cover" />
+                {#if selectedImagePreviews.length > 0}
+                  <img src={selectedImagePreviews[0]} alt="Selected attachment preview" class="size-12 rounded-md border border-[#2a3557] object-cover" />
                 {/if}
                 <div class="min-w-0 flex-1 text-sm text-slate-300">
-                  <p class="truncate">{selectedImageFile.name}</p>
+                  <p class="truncate">
+                    {selectedImageFiles.length === 1 ? selectedImageFiles[0].name : `${selectedImageFiles.length} images selected`}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -875,7 +886,7 @@
             <textarea
               bind:this={composerTextarea}
               bind:value={messageText}
-              placeholder={selectedImageFile ? "Describe your edit..." : "Ask anything..."}
+              placeholder={selectedImageFiles.length > 0 ? "Describe your edit or how to combine these images..." : "Ask anything..."}
               rows="1"
               on:keydown={onKeydown}
               on:input={resizeComposer}
@@ -899,7 +910,7 @@
               </svg>
             </button>
 
-            {#if messageText.trim() || selectedImageFile}
+            {#if messageText.trim() || selectedImageFiles.length > 0}
               <button
                 type="submit"
                 disabled={loading}

@@ -27,6 +27,8 @@ def _pick_device(explicit: str | None) -> str:
 
 def _pick_dtype(dtype_name: str, device: str) -> torch.dtype:
     if dtype_name == "bfloat16":
+        if device == "cuda" and hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
+            return torch.float16
         if device == "cpu":
             return torch.float32
         return torch.bfloat16
@@ -94,7 +96,12 @@ class ZImageImg2ImgService:
             call_kwargs["generator"] = torch.Generator(device=self._device).manual_seed(seed)
 
         started = time.perf_counter()
-        result = self._pipeline(**call_kwargs).images[0]
+        if self._device == "cuda":
+            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=self._dtype):
+                result = self._pipeline(**call_kwargs).images[0]
+        else:
+            with torch.inference_mode():
+                result = self._pipeline(**call_kwargs).images[0]
         elapsed = time.perf_counter() - started
         return result, elapsed
 

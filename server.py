@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import html
 import io
 import json
+import math
 import os
 import threading
 import time
@@ -37,6 +38,27 @@ def _select_device() -> str:
         if torch.backends.mps.is_available():
             return "mps"
         return "cpu"
+
+
+def _select_dtype(device: str) -> torch.dtype:
+    dtype_name = os.environ.get("ZIMAGE_DTYPE", "auto").strip().lower()
+
+    if dtype_name == "float32":
+        return torch.float32
+    if dtype_name == "float16":
+        return torch.float16 if device == "cuda" else torch.float32
+    if dtype_name == "bfloat16":
+        if device == "cuda" and hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
+            return torch.float16
+        return torch.bfloat16 if device != "cpu" else torch.float32
+
+    if device == "cuda":
+        if hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+        return torch.float16
+    if device == "mps":
+        return torch.float16
+    return torch.float32
 
 
 def _normalize_content(content: str | list[dict[str, Any]] | None) -> str:
@@ -307,7 +329,7 @@ class ZImageService:
     def __init__(self) -> None:
         self._components: dict[str, Any] | None = None
         self._device = _select_device()
-        self._dtype = torch.bfloat16
+        self._dtype = _select_dtype(self._device)
         self._compile = os.environ.get("ZIMAGE_COMPILE", "0") == "1"
         self._attn_backend = os.environ.get("ZIMAGE_ATTENTION", "_native_flash")
         self._model_path = os.environ.get("ZIMAGE_MODEL_PATH", "ckpts/Z-Image-Turbo")
@@ -508,7 +530,7 @@ class OpenAIChatCompletionsRequest(BaseModel):
     max_tokens: int | None = None
     height: int = 512
     width: int = 512
-    num_inference_steps: int = 8
+    num_inference_steps: int = 4
     guidance_scale: float = 0.0
     seed: int | None = None
     include_admin_log: bool = False
@@ -527,7 +549,7 @@ class OpenAIImageGenerationRequest(BaseModel):
     quality: str | None = None
     style: str | None = None
     user: str | None = None
-    num_inference_steps: int = 8
+    num_inference_steps: int = 4
     guidance_scale: float = 0.0
     seed: int | None = None
 
@@ -808,6 +830,43 @@ def _edit_image_bytes(
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def _compose_images_for_edit(*, images: list[bytes], size: str) -> bytes:
+    if not images:
+        raise HTTPException(status_code=400, detail="At least one image file is required.")
+
+    width, height = _parse_image_size(size)
+
+    decoded_images: list[Image.Image] = []
+    for image_bytes in images:
+        try:
+            decoded_images.append(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
+        except UnidentifiedImageError as exc:
+            raise HTTPException(status_code=400, detail="Invalid image file.") from exc
+
+    if len(decoded_images) == 1:
+        single = decoded_images[0].resize((width, height), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        single.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    canvas = Image.new("RGB", (width, height), color=(0, 0, 0))
+    cols = math.ceil(math.sqrt(len(decoded_images)))
+    rows = math.ceil(len(decoded_images) / cols)
+    tile_w = max(1, width // cols)
+    tile_h = max(1, height // rows)
+
+    for index, image in enumerate(decoded_images):
+        row = index // cols
+        col = index % cols
+
+        fitted = ImageOps.fit(image, (tile_w, tile_h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        canvas.paste(fitted, (col * tile_w, row * tile_h))
+
+    buffer = io.BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 @app.post("/v1/images/generations")
 @app.post("/v1/images/generations/")
 @app.post("/images/generations")
@@ -833,7 +892,7 @@ async def openai_image_edits(
     request: Request,
     model: str = Form("Z-image-turbo"),
     prompt: str = Form(...),
-    image: UploadFile = File(...),
+    image: list[UploadFile] = File(...),
     mask: UploadFile | None = File(None),
     n: int = Form(1),
     size: str = Form("512x512"),
@@ -842,7 +901,7 @@ async def openai_image_edits(
     quality: str | None = Form(None),
     style: str | None = Form(None),
     user: str | None = Form(None),
-    num_inference_steps: int = Form(8),
+    num_inference_steps: int = Form(4),
     guidance_scale: float = Form(0.0),
     strength: float = Form(0.6),
     seed: int | None = Form(None),
@@ -854,12 +913,20 @@ async def openai_image_edits(
     _ = style
     _ = user
 
-    if not image.filename:
+    valid_images = [uploaded for uploaded in image if uploaded.filename]
+    if not valid_images:
         raise HTTPException(status_code=400, detail="image file is required.")
 
-    image_bytes = await image.read()
-    if not image_bytes:
+    image_bytes_list: list[bytes] = []
+    for uploaded in valid_images:
+        current_bytes = await uploaded.read()
+        if current_bytes:
+            image_bytes_list.append(current_bytes)
+
+    if not image_bytes_list:
         raise HTTPException(status_code=400, detail="image file is empty.")
+
+    image_bytes = _compose_images_for_edit(images=image_bytes_list, size=size)
 
     if n < 1:
         raise HTTPException(status_code=400, detail="n must be >= 1.")
@@ -918,7 +985,7 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
             prompt=prompt,
             height=int(options.get("height", 512)),
             width=int(options.get("width", 512)),
-            num_inference_steps=int(options.get("num_inference_steps", 8)),
+            num_inference_steps=int(options.get("num_inference_steps", 4)),
             guidance_scale=float(options.get("guidance_scale", 0.0)),
             seed=options.get("seed"),
         )
@@ -971,7 +1038,7 @@ def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any] | StreamingRe
             prompt=body.prompt,
             height=int(options.get("height", 512)),
             width=int(options.get("width", 512)),
-            num_inference_steps=int(options.get("num_inference_steps", 8)),
+            num_inference_steps=int(options.get("num_inference_steps", 4)),
             guidance_scale=float(options.get("guidance_scale", 0.0)),
             seed=options.get("seed"),
         )

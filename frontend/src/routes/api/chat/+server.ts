@@ -40,7 +40,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
     let message = "";
     let history: IncomingChatMessage[] = [];
-    let attachedImage: File | null = null;
+    let attachedImages: File[] = [];
 
     if (isMultipart) {
       const form = await request.formData();
@@ -56,10 +56,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         }
       }
 
-      const maybeImage = form.get("image");
-      if (maybeImage instanceof File && maybeImage.size > 0) {
-        attachedImage = maybeImage;
-      }
+      const imageEntries = [...form.getAll("image"), ...form.getAll("images")];
+      attachedImages = imageEntries.filter((entry): entry is File => entry instanceof File && entry.size > 0);
     } else {
       const body = (await request.json()) as {
         message?: string;
@@ -70,7 +68,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       history = Array.isArray(body.history) ? body.history : [];
     }
 
-    if (!message && !attachedImage) {
+    if (!message && attachedImages.length === 0) {
       return json({ error: "Message or image is required" }, { status: 400 });
     }
 
@@ -124,7 +122,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
     let upstream: Response;
     try {
-      if (attachedImage) {
+      if (attachedImages.length > 0) {
         const imageEditPayload = new FormData();
         imageEditPayload.set("model", modelName);
         imageEditPayload.set("prompt", message || "Please edit this image.");
@@ -137,7 +135,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         imageEditPayload.set("guidance_scale", String(Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0));
         imageEditPayload.set("strength", String(Number.isFinite(defaultEditStrength) ? defaultEditStrength : 0.6));
         imageEditPayload.set("response_format", "b64_json");
-        imageEditPayload.set("image", attachedImage, attachedImage.name || "image.png");
+        for (const image of attachedImages) {
+          imageEditPayload.append("image", image, image.name || "image.png");
+        }
 
         debugUpstream(`using image edit endpoint: ${modelImageEditUrl}`);
         upstream = await fetch(modelImageEditUrl, {
@@ -177,7 +177,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       debugUpstream(`upstream response status: ${upstream.status}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return gracefulBackendReply(errorMessage, attachedImage ? modelImageEditUrl : modelChatUrl);
+      return gracefulBackendReply(errorMessage, attachedImages.length > 0 ? modelImageEditUrl : modelChatUrl);
     }
 
     if (!upstream.ok) {
@@ -198,7 +198,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         }
       }
 
-      return gracefulBackendReply(upstreamMessage, attachedImage ? modelImageEditUrl : modelChatUrl);
+      return gracefulBackendReply(upstreamMessage, attachedImages.length > 0 ? modelImageEditUrl : modelChatUrl);
     }
 
     const data = await upstream.json();
@@ -235,7 +235,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
               ? data.message.content
               : typeof data?.response === "string"
                 ? data.response
-                : attachedImage
+                : attachedImages.length > 0
                   ? "Image generation completed."
                   : JSON.stringify(data);
 
