@@ -16,6 +16,23 @@ function debugUpstream(message: string) {
   console.info(`[frontend/api/chat] ${message}`);
 }
 
+function normalizeApiBase(url: URL): URL {
+  const path = url.pathname.replace(/\/+$/, "");
+  const endpointSuffixes = ["/api/chat", "/v1/chat/completions", "/v1/images/edits"];
+
+  for (const suffix of endpointSuffixes) {
+    if (path === suffix) {
+      return new URL("/", url.origin);
+    }
+    if (path.endsWith(suffix)) {
+      const basePath = path.slice(0, -suffix.length);
+      return new URL(basePath.length > 0 ? `${basePath}/` : "/", url.origin);
+    }
+  }
+
+  return new URL(path.length > 0 ? `${path}/` : "/", url.origin);
+}
+
 export const POST: RequestHandler = async ({ request, fetch }) => {
   try {
     const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
@@ -90,8 +107,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     try {
       const requestOrigin = new URL(request.url).origin;
       const configuredUrl = new URL(normalizedRawUrl, requestOrigin);
-      const basePath = configuredUrl.pathname.endsWith("/") ? configuredUrl.pathname : `${configuredUrl.pathname}/`;
-      const apiBase = new URL(basePath, configuredUrl.origin);
+      const apiBase = normalizeApiBase(configuredUrl);
 
       modelChatUrl = new URL("v1/chat/completions", apiBase).toString();
       modelImageEditUrl = new URL("v1/images/edits", apiBase).toString();
