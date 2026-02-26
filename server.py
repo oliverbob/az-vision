@@ -652,8 +652,7 @@ def openai_chat_completions(request: Request, body: OpenAIChatCompletionsRequest
     created = int(time.time())
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     message_text = f"Image generation completed in {elapsed:.2f}s."
-    image_id = service.cache_image_base64(image_b64)
-    image_url = f"{_public_base_url(request)}/v1/images/{image_id}"
+    image_url = f"data:image/png;base64,{image_b64}"
     text_block = {
         "type": "text",
         "text": message_text,
