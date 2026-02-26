@@ -138,10 +138,16 @@
     imageInput?.click();
   }
 
+  function fileToDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
   function clearSelectedImage() {
-    if (selectedImagePreview.startsWith("blob:")) {
-      URL.revokeObjectURL(selectedImagePreview);
-    }
     selectedImageFile = null;
     selectedImagePreview = "";
     if (imageInput) {
@@ -149,19 +155,20 @@
     }
   }
 
-  function onImageSelected(event: Event) {
+  async function onImageSelected(event: Event) {
     const target = event.currentTarget as HTMLInputElement;
     const file = target.files?.[0] ?? null;
-    if (selectedImagePreview.startsWith("blob:")) {
-      URL.revokeObjectURL(selectedImagePreview);
-    }
     if (!file || !file.type.startsWith("image/")) {
       clearSelectedImage();
       return;
     }
 
     selectedImageFile = file;
-    selectedImagePreview = URL.createObjectURL(file);
+    try {
+      selectedImagePreview = await fileToDataUrl(file);
+    } catch {
+      clearSelectedImage();
+    }
   }
 
   function resizeComposer() {

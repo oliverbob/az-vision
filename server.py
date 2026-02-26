@@ -16,6 +16,7 @@ from typing import Any, Iterator, Literal
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 import torch
 
@@ -701,6 +702,47 @@ def _generate_images(
     }
 
 
+def _edit_image_bytes(
+    *,
+    image_bytes: bytes,
+    prompt: str,
+    size: str,
+) -> str:
+    width, height = _parse_image_size(size)
+
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except UnidentifiedImageError as exc:
+        raise HTTPException(status_code=400, detail="Invalid image file.") from exc
+
+    image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+    prompt_lc = prompt.lower()
+
+    if any(token in prompt_lc for token in ("enhance", "enhanced", "clean", "improve")):
+        image = ImageEnhance.Sharpness(image).enhance(1.2)
+        image = ImageEnhance.Contrast(image).enhance(1.08)
+
+    if any(token in prompt_lc for token in ("bright", "lighter", "lighten")):
+        image = ImageEnhance.Brightness(image).enhance(1.12)
+
+    if any(token in prompt_lc for token in ("contrast", "crisp")):
+        image = ImageEnhance.Contrast(image).enhance(1.15)
+
+    if any(token in prompt_lc for token in ("satur", "vibrant", "vivid")):
+        image = ImageEnhance.Color(image).enhance(1.15)
+
+    if "grayscale" in prompt_lc or "black and white" in prompt_lc:
+        image = ImageOps.grayscale(image).convert("RGB")
+
+    if "blur" in prompt_lc:
+        image = image.filter(ImageFilter.GaussianBlur(radius=1.0))
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
 @app.post("/v1/images/generations")
 @app.post("/v1/images/generations/")
 @app.post("/images/generations")
@@ -749,16 +791,26 @@ async def openai_image_edits(
     if not image.filename:
         raise HTTPException(status_code=400, detail="image file is required.")
 
-    return _generate_images(
-        request=request,
-        prompt=prompt,
-        n=n,
-        size=size,
-        response_format=response_format,
-        num_inference_steps=num_inference_steps,
-        guidance_scale=guidance_scale,
-        seed=seed,
-    )
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="image file is empty.")
+
+    if n < 1:
+        raise HTTPException(status_code=400, detail="n must be >= 1.")
+
+    edited_images: list[dict[str, str]] = []
+    for _index in range(n):
+        edited_b64 = _edit_image_bytes(image_bytes=image_bytes, prompt=prompt, size=size)
+        if response_format == "url":
+            image_id = service.cache_image_base64(edited_b64)
+            edited_images.append({"url": f"{_public_base_url(request)}/v1/images/{image_id}"})
+        else:
+            edited_images.append({"b64_json": edited_b64})
+
+    return {
+        "created": int(time.time()),
+        "data": edited_images,
+    }
 
 
 @app.post("/api/chat", response_model=None)
