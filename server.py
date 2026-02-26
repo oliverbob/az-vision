@@ -584,7 +584,7 @@ def openai_chat_completions(request: Request, body: OpenAIChatCompletionsRequest
 
     created = int(time.time())
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
-    message_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
+    message_text = f"Image generation completed in {elapsed:.2f}s."
     image_id = service.cache_image_base64(image_b64)
     image_url = f"{_public_base_url(request)}/v1/images/{image_id}"
     text_block = {
@@ -784,7 +784,7 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
     created_at = datetime.now(timezone.utc).isoformat()
-    message_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
+    message_text = f"Image generation completed in {elapsed:.2f}s."
 
     if body.stream:
         return StreamingResponse(
@@ -837,7 +837,7 @@ def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any] | StreamingRe
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
     created_at = datetime.now(timezone.utc).isoformat()
-    response_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
+    response_text = f"Image generation completed in {elapsed:.2f}s."
 
     if body.stream:
         return StreamingResponse(
