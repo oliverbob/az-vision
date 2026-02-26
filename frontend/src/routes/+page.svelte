@@ -9,6 +9,14 @@
     attachmentName?: string;
   };
 
+  type ConversationThread = {
+    id: string;
+    title: string;
+    createdAt: number;
+    updatedAt: number;
+    messages: ChatMessage[];
+  };
+
   let messageText = "";
   let loading = false;
   let error = "";
@@ -18,12 +26,15 @@
   let imageInput: HTMLInputElement | null = null;
   let theme: "dark" | "light" = "dark";
   let messages: ChatMessage[] = [];
+  let conversationThreads: ConversationThread[] = [];
+  let activeConversationId = "";
   let selectedImageFile: File | null = null;
   let selectedImagePreview = "";
   let hasMounted = false;
 
-  const conversationStorageKey = "zimage-conversation-v1";
+  const conversationStorageKey = "zimage-conversations-v1";
   const maxPersistedMessages = 80;
+  const maxPersistedConversations = 40;
 
   const suggestions = [
     { label: "Latest AI news", icon: "🔎", variant: "news" },
@@ -41,14 +52,92 @@
     { icon: "〉_", label: "Console" },
   ];
   const collapsedIcons = ["✎", "⌕", "◉", "◇", "✦", "▣", "⚙", "☰", "〉_"];
-  const conversations = [
-    "an image of a cat",
-    "Create an image ...",
-    "an image of God.",
-    "beautiful wonder...",
-    "hi",
-    "Wonder woman.",
-  ];
+  function createConversationTitle(threadMessages: ChatMessage[]): string {
+    const firstUserMessage = threadMessages.find((msg) => msg.role === "user" && msg.content.trim().length > 0);
+    if (!firstUserMessage) {
+      return "New chat";
+    }
+    const text = firstUserMessage.content.trim();
+    return text.length > 36 ? `${text.slice(0, 36)}...` : text;
+  }
+
+  function createNewConversation(seedMessages: ChatMessage[] = []): ConversationThread {
+    const now = Date.now();
+    return {
+      id: crypto.randomUUID(),
+      title: createConversationTitle(seedMessages),
+      createdAt: now,
+      updatedAt: now,
+      messages: seedMessages,
+    };
+  }
+
+  function persistActiveMessages(nextMessages: ChatMessage[]) {
+    if (!activeConversationId) {
+      return;
+    }
+
+    const sanitized = sanitizeMessagesForStorage(nextMessages);
+    const now = Date.now();
+    conversationThreads = conversationThreads
+      .map((thread) =>
+        thread.id === activeConversationId
+          ? {
+              ...thread,
+              messages: sanitized,
+              updatedAt: now,
+              title: createConversationTitle(sanitized),
+            }
+          : thread,
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, maxPersistedConversations);
+  }
+
+  function setMessages(nextMessages: ChatMessage[]) {
+    messages = nextMessages;
+    persistActiveMessages(nextMessages);
+  }
+
+  async function startNewChat() {
+    const thread = createNewConversation();
+    conversationThreads = [thread, ...conversationThreads].slice(0, maxPersistedConversations);
+    activeConversationId = thread.id;
+    messages = [];
+    messageText = "";
+    error = "";
+    clearSelectedImage();
+    resetComposerHeight();
+    await tick();
+    scrollConversationToBottom();
+  }
+
+  async function openConversation(threadId: string) {
+    const thread = conversationThreads.find((item) => item.id === threadId);
+    if (!thread) {
+      return;
+    }
+
+    activeConversationId = threadId;
+    messages = thread.messages;
+    messageText = "";
+    error = "";
+    clearSelectedImage();
+    await tick();
+    scrollConversationToBottom();
+  }
+
+  function formatConversationTime(timestamp: number): string {
+    const diffMinutes = Math.max(1, Math.floor((Date.now() - timestamp) / 60000));
+    if (diffMinutes < 60) {
+      return `${diffMinutes}m`;
+    }
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) {
+      return `${diffHours}h`;
+    }
+    return `${Math.floor(diffHours / 24)}d`;
+  }
 
   async function sendMessage() {
     const text = messageText.trim();
@@ -68,7 +157,7 @@
       attachmentName: fileToSend?.name,
     } as const;
 
-    messages = [...messages, nextUserMessage];
+    setMessages([...messages, nextUserMessage]);
     await tick();
     scrollConversationToBottom();
     messageText = "";
@@ -107,7 +196,7 @@
 
       const data = (await response.json()) as { reply: string; imageUrl?: string | null };
 
-      messages = [
+      setMessages([
         ...messages,
         {
           role: "assistant",
@@ -115,7 +204,7 @@
           createdAt: Date.now(),
           imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : undefined,
         },
-      ];
+      ]);
 
       await tick();
       scrollConversationToBottom();
@@ -253,12 +342,22 @@
       }));
   }
 
-  function persistConversation(input: ChatMessage[]) {
-    const sanitized = sanitizeMessagesForStorage(input);
-    for (let count = sanitized.length; count >= 0; count -= 1) {
-      const nextSlice = sanitized.slice(-count);
+  function persistConversations(inputThreads: ConversationThread[], inputActiveId: string) {
+    const payload = {
+      activeConversationId: inputActiveId,
+      conversations: inputThreads.slice(0, maxPersistedConversations).map((thread) => ({
+        ...thread,
+        messages: sanitizeMessagesForStorage(thread.messages),
+      })),
+    };
+
+    for (let count = payload.conversations.length; count >= 0; count -= 1) {
+      const nextPayload = {
+        ...payload,
+        conversations: payload.conversations.slice(0, count),
+      };
       try {
-        localStorage.setItem(conversationStorageKey, JSON.stringify(nextSlice));
+        localStorage.setItem(conversationStorageKey, JSON.stringify(nextPayload));
         return;
       } catch {
         continue;
@@ -272,43 +371,86 @@
     }
   }
 
-  function loadPersistedConversation(): ChatMessage[] {
+  function loadPersistedConversations(): { threads: ConversationThread[]; activeId: string } {
     try {
       const raw = localStorage.getItem(conversationStorageKey);
       if (!raw) {
-        return [];
+        return { threads: [], activeId: "" };
       }
 
       const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) {
-        return [];
+      if (typeof parsed !== "object" || parsed === null) {
+        return { threads: [], activeId: "" };
       }
 
-      return parsed
+      const payload = parsed as {
+        activeConversationId?: unknown;
+        conversations?: unknown;
+      };
+
+      const rawConversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+
+      const threads = rawConversations
         .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
         .map((entry) => {
-          const role: ChatMessage["role"] = entry.role === "assistant" ? "assistant" : "user";
-          const content = typeof entry.content === "string" ? entry.content : "";
+          const rawMessages = Array.isArray(entry.messages) ? entry.messages : [];
+          const normalizedMessages = rawMessages
+            .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+            .map((item) => {
+              const role: ChatMessage["role"] = item.role === "assistant" ? "assistant" : "user";
+              const content = typeof item.content === "string" ? item.content : "";
+              const createdAt = typeof item.createdAt === "number" ? item.createdAt : Date.now();
+              const imageUrl = typeof item.imageUrl === "string" ? item.imageUrl : undefined;
+              const attachmentName = typeof item.attachmentName === "string" ? item.attachmentName : undefined;
+              return { role, content, createdAt, imageUrl, attachmentName };
+            })
+            .filter((msg) => msg.content.length > 0 || typeof msg.imageUrl === "string")
+            .slice(-maxPersistedMessages);
+
           const createdAt = typeof entry.createdAt === "number" ? entry.createdAt : Date.now();
-          const imageUrl = typeof entry.imageUrl === "string" ? entry.imageUrl : undefined;
-          const attachmentName = typeof entry.attachmentName === "string" ? entry.attachmentName : undefined;
-          return { role, content, createdAt, imageUrl, attachmentName };
+          const updatedAt = typeof entry.updatedAt === "number" ? entry.updatedAt : createdAt;
+
+          return {
+            id: typeof entry.id === "string" && entry.id.length > 0 ? entry.id : crypto.randomUUID(),
+            title: typeof entry.title === "string" && entry.title.trim().length > 0 ? entry.title : createConversationTitle(normalizedMessages),
+            createdAt,
+            updatedAt,
+            messages: normalizedMessages,
+          } as ConversationThread;
         })
-        .filter((msg) => msg.content.length > 0 || typeof msg.imageUrl === "string")
-        .slice(-maxPersistedMessages);
+        .slice(0, maxPersistedConversations)
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+
+      const activeId =
+        typeof payload.activeConversationId === "string" && threads.some((thread) => thread.id === payload.activeConversationId)
+          ? payload.activeConversationId
+          : (threads[0]?.id ?? "");
+
+      return { threads, activeId };
     } catch {
-      return [];
+      return { threads: [], activeId: "" };
     }
   }
 
   $: if (hasMounted) {
-    persistConversation(messages);
+    persistConversations(conversationThreads, activeConversationId);
   }
 
   onMount(() => {
     drawerOpen = window.matchMedia("(min-width: 1024px)").matches;
 
-    messages = loadPersistedConversation();
+    const restored = loadPersistedConversations();
+    if (restored.threads.length > 0) {
+      conversationThreads = restored.threads;
+      activeConversationId = restored.activeId;
+      messages = restored.threads.find((thread) => thread.id === restored.activeId)?.messages ?? [];
+    } else {
+      const starter = createNewConversation();
+      conversationThreads = [starter];
+      activeConversationId = starter.id;
+      messages = [];
+    }
+
     hasMounted = true;
     if (messages.length > 0) {
       void tick().then(() => scrollConversationToBottom());
@@ -398,7 +540,7 @@
               </div>
 
               <div class="-mt-[12px] px-2 pt-0 pb-3">
-                <button class="sidebar-interactive grid h-11 w-full grid-cols-[48px_1fr] items-center rounded-xl pr-3 text-left text-slate-300 hover:bg-slate-700/40">
+                <button type="button" class="sidebar-interactive grid h-11 w-full grid-cols-[48px_1fr] items-center rounded-xl pr-3 text-left text-slate-300 hover:bg-slate-700/40" on:click={startNewChat}>
                   <span class="flex h-11 items-center justify-start pl-[7px] text-[18px] leading-none text-slate-400">✎</span>
                   <span>New chat</span>
                 </button>
@@ -431,12 +573,20 @@
 
             <div class="mt-3 border-t border-slate-700/50 pt-3">
               <div class="space-y-1 pr-1">
-                {#each conversations as conversation, idx}
-                  <button class="sidebar-interactive flex w-full items-center rounded-lg py-2 pl-[7px] pr-3 text-left text-sm text-slate-300 hover:bg-slate-700/40">
-                    <span class="truncate">{conversation}</span>
-                    <span class="history-time ml-auto text-xs">{idx < 2 ? '19h' : idx < 4 ? '4h' : '3h'}</span>
-                  </button>
-                {/each}
+                {#if conversationThreads.length === 0}
+                  <p class="px-[7px] py-2 text-xs text-slate-500">No chats yet</p>
+                {:else}
+                  {#each conversationThreads as conversation}
+                    <button
+                      type="button"
+                      class="sidebar-interactive flex w-full items-center rounded-lg py-2 pl-[7px] pr-3 text-left text-sm text-slate-300 hover:bg-slate-700/40 {conversation.id === activeConversationId ? 'bg-slate-700/40' : ''}"
+                      on:click={() => openConversation(conversation.id)}
+                    >
+                      <span class="truncate">{conversation.title}</span>
+                      <span class="history-time ml-auto text-xs">{formatConversationTime(conversation.updatedAt)}</span>
+                    </button>
+                  {/each}
+                {/if}
               </div>
             </div>
             </div>

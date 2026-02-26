@@ -50,12 +50,26 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
     const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim();
 
+    const toTargetPath = (target?: string) => {
+      if (!target) {
+        return null;
+      }
+
+      try {
+        const parsed = new URL(target);
+        return parsed.pathname || "/";
+      } catch {
+        return target.startsWith("/") ? target : null;
+      }
+    };
+
     const gracefulBackendReply = (reason?: string, target?: string) => {
       const suffix = reason ? ` (${reason})` : "";
-      const targetHint = target ? `\nTarget: ${target}` : "";
+      const targetPath = toTargetPath(target);
+      const targetHint = targetPath ? `\nTarget: ${targetPath}` : "";
       return json({
         reply:
-          `Backend is temporarily unavailable.${suffix}\nPlease ensure your model API server is reachable on port 9090 and try again.${targetHint}`,
+          `Backend is temporarily unavailable.${suffix}\nPlease ensure your model API server is reachable and try again.${targetHint}`,
         imageUrl: null,
       });
     };
@@ -193,7 +207,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         }
       }
 
-      return gracefulBackendReply(upstreamMessage, modelChatUrl);
+      return gracefulBackendReply(upstreamMessage, attachedImage ? modelImageEditUrl : modelChatUrl);
     }
 
     const data = await upstream.json();
