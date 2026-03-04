@@ -6,6 +6,7 @@ from pathlib import Path
 import platform
 import grp
 import pwd
+import shlex
 import shutil
 import signal
 import socket
@@ -29,11 +30,17 @@ BACKEND_LOG = ROOT_DIR / ".backend.log"
 FRONTEND_LOG = ROOT_DIR / ".frontend.log"
 BACKEND_PID = ROOT_DIR / ".backend.pid"
 FRONTEND_PID = ROOT_DIR / ".frontend.pid"
+WATCHDOG_LOG = ROOT_DIR / ".watchdog.log"
+WATCHDOG_PID = ROOT_DIR / ".gpu_watchdog.pid"
 
 RUN_PYTHON_BOOTSTRAP = os.environ.get("RUN_PYTHON_BOOTSTRAP", "1") == "1"
 RUN_FRONTEND_INSTALL = os.environ.get("RUN_FRONTEND_INSTALL", "1") == "1"
 RUN_FRONTEND_CHECK = os.environ.get("RUN_FRONTEND_CHECK", "1") == "1"
 RUN_FRONTEND_BUILD = os.environ.get("RUN_FRONTEND_BUILD", "1") == "1"
+GPU_WATCHDOG_ENABLED = os.environ.get("ZIMAGE_GPU_WATCHDOG", "1") == "1"
+GPU_WATCHDOG_THRESHOLD_MB = int(os.environ.get("ZIMAGE_GPU_WATCHDOG_THRESHOLD_MB", str(20 * 1024)))
+GPU_WATCHDOG_INTERVAL_SEC = max(1, int(os.environ.get("ZIMAGE_GPU_WATCHDOG_INTERVAL_SEC", "5")))
+GPU_WATCHDOG_COOLDOWN_SEC = max(1, int(os.environ.get("ZIMAGE_GPU_WATCHDOG_COOLDOWN_SEC", "30")))
 
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
@@ -241,6 +248,7 @@ def stop_existing_services() -> None:
     print("Stopping existing backend/frontend processes (if running)...")
     kill_by_pid_file(BACKEND_PID)
     kill_by_pid_file(FRONTEND_PID)
+    kill_by_pid_file(WATCHDOG_PID)
     kill_by_port(BACKEND_PORT)
     kill_by_port(FRONTEND_PORT)
 
@@ -309,7 +317,83 @@ def start_frontend() -> None:
     print(f"Frontend started. Log: {FRONTEND_LOG}")
 
 
+def _query_total_gpu_used_mb() -> int | None:
+    rc, out = check_output(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+    if rc != 0:
+        return None
+
+    values: list[int] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        token = line.split()[0]
+        try:
+            values.append(int(token))
+        except ValueError:
+            continue
+
+    if not values:
+        return None
+    return sum(values)
+
+
+def _run_gpu_watchdog() -> int:
+    if IS_WINDOWS:
+        return 0
+
+    WATCHDOG_PID.write_text(str(os.getpid()), encoding="utf-8")
+    print(
+        f"GPU watchdog active (threshold={GPU_WATCHDOG_THRESHOLD_MB}MB, interval={GPU_WATCHDOG_INTERVAL_SEC}s)."
+    )
+
+    last_restart = 0.0
+    while True:
+        used_mb = _query_total_gpu_used_mb()
+        if used_mb is None:
+            time.sleep(GPU_WATCHDOG_INTERVAL_SEC)
+            continue
+
+        now = time.time()
+        if used_mb >= GPU_WATCHDOG_THRESHOLD_MB and (now - last_restart) >= GPU_WATCHDOG_COOLDOWN_SEC:
+            print(f"[watchdog] GPU usage {used_mb}MB >= {GPU_WATCHDOG_THRESHOLD_MB}MB; restarting stack via run.sh")
+            kill_by_pid_file(BACKEND_PID)
+            kill_by_pid_file(FRONTEND_PID)
+            kill_by_port(BACKEND_PORT)
+            kill_by_port(FRONTEND_PORT)
+
+            run_sh = ROOT_DIR / "run.sh"
+            cmd = ["bash", str(run_sh)] if run_sh.exists() else [sys.executable, str(ROOT_DIR / "run.py")]
+            env = os.environ.copy()
+            env["ZIMAGE_GPU_WATCHDOG"] = "1"
+            _spawn_detached(cmd, ROOT_DIR, WATCHDOG_LOG, env)
+
+            try:
+                WATCHDOG_PID.unlink()
+            except Exception:
+                pass
+            return 0
+
+        time.sleep(GPU_WATCHDOG_INTERVAL_SEC)
+
+
+def start_gpu_watchdog() -> None:
+    if IS_WINDOWS or not GPU_WATCHDOG_ENABLED:
+        return
+
+    kill_by_pid_file(WATCHDOG_PID)
+
+    env = os.environ.copy()
+    cmd = [str(VENV_PYTHON), "run.py", "--gpu-watchdog"] if VENV_PYTHON.exists() else [sys.executable, "run.py", "--gpu-watchdog"]
+    pid = _spawn_detached(cmd, ROOT_DIR, WATCHDOG_LOG, env)
+    WATCHDOG_PID.write_text(str(pid), encoding="utf-8")
+    print(f"GPU watchdog started. Log: {WATCHDOG_LOG}")
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--gpu-watchdog":
+        return _run_gpu_watchdog()
+
     print(f"Workspace: {ROOT_DIR}")
     print(f"Platform: {platform.system()} {platform.release()}")
 
@@ -321,6 +405,7 @@ def main() -> int:
 
     start_backend()
     start_frontend()
+    start_gpu_watchdog()
 
     print()
     print(f"Backend:  http://127.0.0.1:{BACKEND_PORT}")
