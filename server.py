@@ -382,7 +382,7 @@ class ZImageService:
         prompt: str,
         height: int = 512,
         width: int = 512,
-        num_inference_steps: int = 8,
+        num_inference_steps: int = 1,
         guidance_scale: float = 0.0,
         seed: int | None = None,
     ) -> tuple[str, float]:
@@ -548,7 +548,7 @@ class OpenAIChatCompletionsRequest(BaseModel):
     max_tokens: int | None = None
     height: int = 512
     width: int = 512
-    num_inference_steps: int = 4
+    num_inference_steps: int = 1
     guidance_scale: float = 0.0
     seed: int | None = None
     include_admin_log: bool = False
@@ -567,7 +567,7 @@ class OpenAIImageGenerationRequest(BaseModel):
     quality: str | None = None
     style: str | None = None
     user: str | None = None
-    num_inference_steps: int = 4
+    num_inference_steps: int = 1
     guidance_scale: float = 0.0
     seed: int | None = None
 
@@ -1007,7 +1007,7 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
             prompt=prompt,
             height=int(options.get("height", 512)),
             width=int(options.get("width", 512)),
-            num_inference_steps=int(options.get("num_inference_steps", 4)),
+            num_inference_steps=int(options.get("num_inference_steps", 1)),
             guidance_scale=float(options.get("guidance_scale", 0.0)),
             seed=options.get("seed"),
         )
@@ -1060,7 +1060,7 @@ def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any] | StreamingRe
             prompt=body.prompt,
             height=int(options.get("height", 512)),
             width=int(options.get("width", 512)),
-            num_inference_steps=int(options.get("num_inference_steps", 4)),
+            num_inference_steps=int(options.get("num_inference_steps", 1)),
             guidance_scale=float(options.get("guidance_scale", 0.0)),
             seed=options.get("seed"),
         )
