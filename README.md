@@ -370,6 +370,8 @@ You can run a Python server for `Z-image-turbo` that exposes:
   - `POST /v1/chat/completions`
   - `POST /v1/images/generations`
   - `POST /v1/images/edits`
+  - `POST /v1/images/describe` — image-to-text
+  - `POST /v1/images/chat` — one upload endpoint that routes to image-to-text or image-to-image
   - `GET /v1/models`
 - Ollama-like:
   - `POST /api/chat`
@@ -383,6 +385,59 @@ python server.py
 ```
 
 By default, it listens on `http://0.0.0.0:9090`.
+
+### Image-to-text (vision)
+
+Z-Image itself is generation-only, so image understanding is delegated to a local
+multimodal model served over Ollama. `GET /health` reports whether it is reachable:
+
+```json
+{"status":"ok","vision":{"enabled":true,"available":true,"model":"moondream:latest","url":"http://127.0.0.1:11434"}}
+```
+
+Pull a vision model once (`ollama pull moondream`), then any of these will answer in text:
+
+```bash
+# multipart
+curl http://localhost:9090/v1/images/describe -F "image=@photo.jpg" -F "prompt=What is in this image?"
+
+# OpenAI-style with an image_url block
+curl http://localhost:9090/v1/chat/completions -H 'content-type: application/json' -d '{
+  "model": "Z-image-turbo",
+  "messages": [{"role":"user","content":[
+    {"type":"text","text":"What is in this image?"},
+    {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}
+  ]}]
+}'
+
+# Ollama-style
+curl http://localhost:9090/api/chat -H 'content-type: application/json' -d '{
+  "model": "Z-image-turbo",
+  "messages": [{"role":"user","content":"Describe this image.","images":["<base64>"]}]
+}'
+```
+
+When an image is attached, the prompt decides the response type: a **question**
+("what is this?", "how many people?", "read the text") is answered in text, while
+an **instruction** ("make it a watercolor", "remove the background") returns an
+edited image. `POST /v1/images/chat` accepts `mode=auto|edit|describe` to override
+this.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ZIMAGE_VISION_ENABLED` | `1` | Set to `0` to disable image-to-text entirely |
+| `ZIMAGE_VISION_URL` | `http://127.0.0.1:11434` | Ollama-compatible base URL |
+| `ZIMAGE_VISION_MODEL` | `moondream:latest` | Vision model to use |
+| `ZIMAGE_VISION_MAX_IMAGES` | `1` | Images per request. `moondream` only handles one; raise it for `llava`/`gemma3` |
+| `ZIMAGE_VISION_KEEP_ALIVE` | `30s` | How long Ollama keeps the vision model resident |
+| `ZIMAGE_VISION_NUM_GPU` | *(unset)* | Set to `0` to run the vision model on CPU when VRAM is tight |
+| `ZIMAGE_VISION_TIMEOUT` | `180` | Request timeout in seconds |
+| `ZIMAGE_VISION_DEFAULT_PROMPT` | `Describe this image in detail.` | Used for a bare upload, and as the retry prompt when the model returns nothing |
+
+> **VRAM note:** Z-Image plus the edit pipeline already occupies ~21 GB on a 24 GB
+> card, so only a small vision model (`moondream`, ~1.8 GB) fits alongside them.
+> Larger ones such as `llava-phi3` will fail to allocate — run those with
+> `ZIMAGE_VISION_NUM_GPU=0`, or point `ZIMAGE_VISION_URL` at another host.
 
 ### Performance tuning (GPU)
 

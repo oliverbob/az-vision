@@ -9,6 +9,8 @@
     attachmentName?: string;
   };
 
+  type UploadMode = "auto" | "edit" | "describe";
+
   type ConversationThread = {
     id: string;
     title: string;
@@ -30,7 +32,28 @@
   let activeConversationId = "";
   let selectedImageFiles: File[] = [];
   let selectedImagePreviews: string[] = [];
+  let uploadMode: UploadMode = "auto";
+  // The image that a plain-text follow-up keeps editing, so "now make the sky
+  // purple" refines the last result instead of generating a new image from scratch.
+  let workingImageUrl: string | null = null;
   let hasMounted = false;
+
+  const uploadModes: { value: UploadMode; label: string; hint: string }[] = [
+    { value: "auto", label: "Auto", hint: "Questions get an answer, instructions get an edited image" },
+    { value: "edit", label: "Edit image", hint: "Image-to-image: return an edited version" },
+    { value: "describe", label: "Ask about it", hint: "Image-to-text: answer in words" },
+  ];
+
+  $: composerPlaceholder =
+    selectedImageFiles.length > 0
+      ? uploadMode === "describe"
+        ? "Ask a question about this image..."
+        : uploadMode === "edit"
+          ? "Describe your edit or how to combine these images..."
+          : "Ask about the image, or describe an edit..."
+      : workingImageUrl
+        ? "Describe the next edit..."
+        : "Ask anything...";
 
   const conversationStorageKey = "zimage-conversations-v1";
   const maxPersistedMessages = 80;
@@ -107,6 +130,7 @@
     messageText = "";
     error = "";
     clearSelectedImage();
+    clearWorkingImage();
     resetComposerHeight();
 
     if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
@@ -128,6 +152,7 @@
     messageText = "";
     error = "";
     clearSelectedImage();
+    clearWorkingImage();
     await tick();
     scrollConversationToBottom();
   }
@@ -153,6 +178,9 @@
     const history = [...messages];
     const filesToSend = [...selectedImageFiles];
     const previewsToSend = [...selectedImagePreviews];
+    const modeToSend = uploadMode;
+    // With no new upload, a live working image turns this into a follow-up edit.
+    const followUpImageUrl = filesToSend.length === 0 ? workingImageUrl : null;
     const attachmentLabel =
       filesToSend.length === 1
         ? filesToSend[0].name
@@ -162,7 +190,7 @@
 
     const nextUserMessage = {
       role: "user",
-      content: text || "Please edit this image.",
+      content: text || (modeToSend === "describe" ? "What is in this image?" : "Please edit this image."),
       createdAt: Date.now(),
       imageUrl: previewsToSend[0] || undefined,
       attachmentName: attachmentLabel,
@@ -178,29 +206,38 @@
     loading = true;
 
     try {
-      const response = filesToSend.length > 0
-        ? await fetch("/api/chat", {
-            method: "POST",
-            body: (() => {
-              const form = new FormData();
-              form.set("message", text);
-              form.set("history", JSON.stringify(history));
-              for (const file of filesToSend) {
-                form.append("image", file, file.name || "image.png");
-              }
-              return form;
-            })(),
-          })
-        : await fetch("/api/chat", {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              message: text,
-              history,
-            }),
-          });
+      let response: Response;
+
+      if (filesToSend.length > 0) {
+        const form = new FormData();
+        form.set("message", text);
+        form.set("mode", modeToSend);
+        form.set("history", JSON.stringify(history));
+        for (const file of filesToSend) {
+          form.append("image", file, file.name || "image.png");
+        }
+        response = await fetch("/api/chat", { method: "POST", body: form });
+      } else if (followUpImageUrl) {
+        const form = new FormData();
+        form.set("message", text);
+        // The working-image chip is an explicit "keep editing this", so never
+        // let the prompt reroute this to a text answer.
+        form.set("mode", "edit");
+        form.set("history", JSON.stringify(history));
+        form.append("image", await dataUrlToFile(followUpImageUrl, "previous.png"), "previous.png");
+        response = await fetch("/api/chat", { method: "POST", body: form });
+      } else {
+        response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            message: text,
+            history,
+          }),
+        });
+      }
 
       if (!response.ok) {
         const details = await response.text();
@@ -223,6 +260,13 @@
       scrollConversationToBottom();
 
       if (typeof data.imageUrl === "string") {
+        // Chain edits: the newest result becomes what the next message edits.
+        // A plain text-to-image generation deliberately does not arm this — use
+        // the "Edit this image" button on the result to start from one.
+        if (filesToSend.length > 0 || followUpImageUrl) {
+          workingImageUrl = data.imageUrl;
+        }
+
         await tick();
         scrollToLatestGeneratedImage();
       }
@@ -256,6 +300,21 @@
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(file);
     });
+  }
+
+  async function dataUrlToFile(dataUrl: string, filename: string): Promise<File> {
+    const blob = await (await fetch(dataUrl)).blob();
+    return new File([blob], filename, { type: blob.type || "image/png" });
+  }
+
+  function useImageAsWorkingImage(imageUrl: string) {
+    workingImageUrl = imageUrl;
+    clearSelectedImage();
+    composerTextarea?.focus();
+  }
+
+  function clearWorkingImage() {
+    workingImageUrl = null;
   }
 
   function clearSelectedImage() {
@@ -815,6 +874,18 @@
                         class="mt-3 w-full rounded-xl border border-[#2a3557]"
                         loading="lazy"
                       />
+                      {#if msg.role === "assistant"}
+                        <button
+                          type="button"
+                          class="mt-2 rounded-full border border-[#2a3557] px-3 py-1 text-xs text-slate-300 transition-colors hover:border-emerald-400/60 hover:text-emerald-200 {workingImageUrl ===
+                          msg.imageUrl
+                            ? 'border-emerald-400/60 text-emerald-200'
+                            : ''}"
+                          on:click={() => useImageAsWorkingImage(msg.imageUrl!)}
+                        >
+                          {workingImageUrl === msg.imageUrl ? "✓ Editing this image" : "Edit this image"}
+                        </button>
+                      {/if}
                     {/if}
                   </div>
                 </article>
@@ -862,6 +933,28 @@
           />
 
           <div class="min-w-0">
+            {#if selectedImageFiles.length === 0 && workingImageUrl}
+              <div class="mb-2 flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-2 py-2">
+                <img
+                  src={workingImageUrl}
+                  alt="Current subject of follow-up edits"
+                  class="size-12 rounded-md border border-emerald-500/30 object-cover"
+                />
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-sm text-emerald-200">Editing this image</p>
+                  <p class="truncate text-xs text-slate-400">Your next message refines it — clear to generate a new image instead.</p>
+                </div>
+                <button
+                  type="button"
+                  class="grid size-7 place-items-center self-start rounded-md text-slate-300 hover:bg-slate-700/50"
+                  aria-label="Stop editing this image"
+                  on:click={clearWorkingImage}
+                >
+                  ✕
+                </button>
+              </div>
+            {/if}
+
             {#if selectedImageFiles.length > 0}
               <div class="mb-2 flex items-center gap-2 rounded-xl border border-[#2a3557] bg-[#111b34] px-2 py-2">
                 {#if selectedImagePreviews.length > 0}
@@ -871,10 +964,25 @@
                   <p class="truncate">
                     {selectedImageFiles.length === 1 ? selectedImageFiles[0].name : `${selectedImageFiles.length} images selected`}
                   </p>
+                  <div class="mt-1.5 flex items-center gap-1" role="group" aria-label="What to do with the uploaded image">
+                    {#each uploadModes as option (option.value)}
+                      <button
+                        type="button"
+                        aria-pressed={uploadMode === option.value}
+                        title={option.hint}
+                        class="rounded-full border px-2 py-0.5 text-xs transition-colors {uploadMode === option.value
+                          ? 'border-sky-400 bg-sky-500/20 text-sky-200'
+                          : 'border-[#2a3557] text-slate-400 hover:border-slate-500 hover:text-slate-200'}"
+                        on:click={() => (uploadMode = option.value)}
+                      >
+                        {option.label}
+                      </button>
+                    {/each}
+                  </div>
                 </div>
                 <button
                   type="button"
-                  class="grid size-7 place-items-center rounded-md text-slate-300 hover:bg-slate-700/50"
+                  class="grid size-7 place-items-center self-start rounded-md text-slate-300 hover:bg-slate-700/50"
                   aria-label="Remove selected image"
                   on:click={clearSelectedImage}
                 >
@@ -886,7 +994,7 @@
             <textarea
               bind:this={composerTextarea}
               bind:value={messageText}
-              placeholder={selectedImageFiles.length > 0 ? "Describe your edit or how to combine these images..." : "Ask anything..."}
+              placeholder={composerPlaceholder}
               rows="1"
               on:keydown={onKeydown}
               on:input={resizeComposer}

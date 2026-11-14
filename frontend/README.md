@@ -25,11 +25,42 @@ The local frontend API route is a caller/proxy only. It forwards requests to Ope
 
 `POST /v1/chat/completions`
 
-- image-to-image edits (when user attaches an image):
+- image upload (image-to-image **and** image-to-text):
 
-`POST /v1/images/edits`
+`POST /v1/images/chat`
 
-You can now attach one or more images in the UI. If multiple images are attached, they are sent together and combined server-side before instruction-based editing.
+You can attach one or more images in the UI. The composer shows a mode selector next to the attachment:
+
+| Mode | Behaviour |
+| --- | --- |
+| **Auto** (default) | Questions ("what is this?", "how many people?", "read the text") get a text answer; instructions ("make it a watercolor", "remove the background") get an edited image. |
+| **Edit image** | Always image-to-image. Multiple images are combined server-side before instruction-based editing. |
+| **Ask about it** | Always image-to-text. If the vision model only accepts one image at a time, each image is described separately and the answers are labelled. |
+
+### Follow-up edits (conversational image-to-image)
+
+After an edit returns a result, that result becomes the **working image**: it is shown as a green chip above the composer, and your next plain-text message refines it instead of generating a brand-new image.
+
+```
+[upload photo] "make it a pencil sketch"        -> edited image
+               "now change the background to a snowy mountain" -> edits that result
+               "add falling snow"               -> edits that result
+```
+
+- Clear the chip (✕) to go back to plain text-to-image generation.
+- A plain text-to-image generation does **not** arm the chip, so unrelated prompts stay independent. Use the **Edit this image** button under any generated result to start editing from it.
+- Follow-ups are always sent as `mode=edit`, so a polite phrasing like "can you make it brighter?" is never mistaken for a question.
+- The working image resets when you switch or start a conversation.
+
+Each follow-up re-sends the previous result at `ZIMAGE_EDIT_STRENGTH` (default `0.6`). Raise it for more dramatic changes per step, lower it to keep more of the original.
+
+Image-to-text is served by a local vision model over Ollama — see `ZIMAGE_VISION_*` in the backend README. `GET /health` reports whether it is reachable.
+
+The lower-level backend endpoints are still available directly:
+
+- `POST /v1/images/edits` — OpenAI-compatible image edit
+- `POST /v1/images/describe` — multipart image-to-text
+- `POST /v1/chat/completions` and `POST /api/chat` — accept `image_url` blocks / `images` and answer in text when the prompt is a question
 
 The frontend route returns:
 

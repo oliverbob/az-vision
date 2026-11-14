@@ -7,6 +7,10 @@ type IncomingChatMessage = {
   createdAt?: number;
 };
 
+type UploadMode = "auto" | "edit" | "describe";
+
+const UPLOAD_MODES: readonly UploadMode[] = ["auto", "edit", "describe"];
+
 const isDev = process.env.NODE_ENV !== "production";
 
 function debugUpstream(message: string) {
@@ -18,7 +22,13 @@ function debugUpstream(message: string) {
 
 function normalizeApiBase(url: URL): URL {
   const path = url.pathname.replace(/\/+$/, "");
-  const endpointSuffixes = ["/api/chat", "/v1/chat/completions", "/v1/images/edits"];
+  const endpointSuffixes = [
+    "/api/chat",
+    "/v1/chat/completions",
+    "/v1/images/edits",
+    "/v1/images/chat",
+    "/v1/images/describe",
+  ];
 
   for (const suffix of endpointSuffixes) {
     if (path === suffix) {
@@ -41,10 +51,16 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     let message = "";
     let history: IncomingChatMessage[] = [];
     let attachedImages: File[] = [];
+    let uploadMode: UploadMode = "auto";
 
     if (isMultipart) {
       const form = await request.formData();
       message = String(form.get("message") ?? "").trim();
+
+      const rawMode = String(form.get("mode") ?? "auto");
+      if ((UPLOAD_MODES as readonly string[]).includes(rawMode)) {
+        uploadMode = rawMode as UploadMode;
+      }
 
       const rawHistory = form.get("history");
       if (typeof rawHistory === "string") {
@@ -101,14 +117,16 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     const normalizedRawUrl = configuredModelChatUrl;
 
     let modelChatUrl: string;
-    let modelImageEditUrl: string;
+    let modelImageChatUrl: string;
     try {
       const requestOrigin = new URL(request.url).origin;
       const configuredUrl = new URL(normalizedRawUrl, requestOrigin);
       const apiBase = normalizeApiBase(configuredUrl);
 
       modelChatUrl = new URL("v1/chat/completions", apiBase).toString();
-      modelImageEditUrl = new URL("v1/images/edits", apiBase).toString();
+      // Single upload entry point: the backend routes to image-to-text or
+      // image-to-image based on `mode` (and on the prompt when mode is "auto").
+      modelImageChatUrl = new URL("v1/images/chat", apiBase).toString();
     } catch {
       return gracefulBackendReply("Invalid MODEL_CHAT_URL", configuredModelChatUrl);
     }
@@ -125,26 +143,32 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     let upstream: Response;
     try {
       if (attachedImages.length > 0) {
-        const imageEditPayload = new FormData();
-        imageEditPayload.set("model", modelName);
-        imageEditPayload.set("prompt", message || "Please edit this image.");
-        imageEditPayload.set("n", "1");
-        imageEditPayload.set(
+        const imageChatPayload = new FormData();
+        imageChatPayload.set("model", modelName);
+        // Keep the prompt verbatim so the backend can tell a question ("what is
+        // this?") from an edit instruction ("make it a watercolor").
+        imageChatPayload.set("prompt", message);
+        imageChatPayload.set("mode", uploadMode);
+        imageChatPayload.set("n", "1");
+        imageChatPayload.set(
           "size",
           `${Number.isFinite(defaultWidth) ? defaultWidth : 512}x${Number.isFinite(defaultHeight) ? defaultHeight : 512}`,
         );
-        imageEditPayload.set("num_inference_steps", String(Number.isFinite(defaultEditSteps) ? defaultEditSteps : baseSteps * 2));
-        imageEditPayload.set("guidance_scale", String(Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0));
-        imageEditPayload.set("strength", String(Number.isFinite(defaultEditStrength) ? defaultEditStrength : 0.6));
-        imageEditPayload.set("response_format", "b64_json");
+        imageChatPayload.set("num_inference_steps", String(Number.isFinite(defaultEditSteps) ? defaultEditSteps : baseSteps * 2));
+        imageChatPayload.set("guidance_scale", String(Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0));
+        imageChatPayload.set("strength", String(Number.isFinite(defaultEditStrength) ? defaultEditStrength : 0.6));
+        imageChatPayload.set("response_format", "b64_json");
+        if (env.ZIMAGE_VISION_MODEL?.trim()) {
+          imageChatPayload.set("vision_model", env.ZIMAGE_VISION_MODEL.trim());
+        }
         for (const image of attachedImages) {
-          imageEditPayload.append("image", image, image.name || "image.png");
+          imageChatPayload.append("image", image, image.name || "image.png");
         }
 
-        debugUpstream(`using image edit endpoint: ${modelImageEditUrl}`);
-        upstream = await fetch(modelImageEditUrl, {
+        debugUpstream(`using image chat endpoint (mode=${uploadMode}): ${modelImageChatUrl}`);
+        upstream = await fetch(modelImageChatUrl, {
           method: "POST",
-          body: imageEditPayload,
+          body: imageChatPayload,
         });
       } else {
         const upstreamPayload = {
@@ -179,7 +203,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       debugUpstream(`upstream response status: ${upstream.status}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return gracefulBackendReply(errorMessage, attachedImages.length > 0 ? modelImageEditUrl : modelChatUrl);
+      return gracefulBackendReply(errorMessage, attachedImages.length > 0 ? modelImageChatUrl : modelChatUrl);
     }
 
     if (!upstream.ok) {
@@ -200,7 +224,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         }
       }
 
-      return gracefulBackendReply(upstreamMessage, attachedImages.length > 0 ? modelImageEditUrl : modelChatUrl);
+      return gracefulBackendReply(upstreamMessage, attachedImages.length > 0 ? modelImageChatUrl : modelChatUrl);
     }
 
     const data = await upstream.json();

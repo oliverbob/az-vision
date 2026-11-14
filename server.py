@@ -10,8 +10,11 @@ import io
 import json
 import math
 import os
+import re
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from typing import Any, Iterator, Literal
 
@@ -104,6 +107,131 @@ def _build_prompt_from_ollama_messages(messages: list["OllamaMessage"]) -> str:
     return "\n".join(rendered).strip()
 
 
+_DATA_URL_PREFIX = re.compile(r"^data:image/[a-z0-9.+-]+;base64,", re.IGNORECASE)
+
+# These openers only ever ask *about* the image, so they win outright.
+_STRONG_QUESTION_PATTERN = re.compile(
+    r"^\s*(?:please\s+)?("
+    r"what|what's|whats|who|whose|whom|where|when|why|which|"
+    r"describe|caption|explain|identify|analy[sz]e|read|ocr|transcribe|translate|"
+    r"summari[sz]e|list|count|detect|recogni[sz]e|label|extract|tell"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# These read as questions but are just as often a polite edit request
+# ("can you make it brighter?"), so an edit verb overrides them.
+# The auxiliaries need a following pronoun to count, otherwise imperative
+# follow-ups like "do the same but in blue" read as questions.
+_WEAK_QUESTION_PATTERN = re.compile(
+    r"^\s*(?:please\s+)?(?:"
+    r"how\b"
+    r"|(?:is|are|was|were|does|do|did|can|could|would|should)\s+"
+    r"(?:you|it|this|that|these|those|there|they|he|she|i|we)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_EDIT_INTENT_PATTERN = re.compile(
+    r"\b("
+    r"edit|make|turn|convert|change|transform|restyle|redraw|repaint|"
+    r"add|remove|replace|erase|delete|swap|crop|rotate|resize|"
+    r"enhance|improve|upscale|sharpen|blur|brighten|darken|recolou?r|colou?ri[sz]e|"
+    r"combine|merge|blend|composite|"
+    r"render|generate|create|draw|paint|"
+    r"watercolou?r|cartoon|anime|sketch|grayscale|greyscale|black and white"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_TEXT_ANSWER_PATTERN = re.compile(
+    r"\b("
+    r"describe|description|caption|explain|identify|analy[sz]e|"
+    r"ocr|transcribe|summar(?:y|ise|ize)|"
+    r"tell me|what is|what are|how many|look like|say about"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_text_answer(prompt: str) -> bool:
+    """Decide whether an uploaded image should be answered with text (image-to-text)
+    or with a new image (image-to-image).
+
+    A bare upload with no prompt keeps the historical image-edit behaviour.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return False
+    if _STRONG_QUESTION_PATTERN.match(text):
+        return True
+    if _EDIT_INTENT_PATTERN.search(text):
+        return False
+    if _WEAK_QUESTION_PATTERN.match(text) or text.endswith("?"):
+        return True
+    return bool(_TEXT_ANSWER_PATTERN.search(text))
+
+
+def _normalize_image_payload(value: Any) -> str | None:
+    """Coerce a data URL / bare base64 string into the bare base64 an Ollama-style
+    vision backend expects. Returns None when the value is not usable."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    candidate = _DATA_URL_PREFIX.sub("", candidate)
+    if candidate.startswith(("http://", "https://", "data:")):
+        return None
+    return candidate
+
+
+def _extract_images_from_openai_messages(messages: list["OpenAIChatMessage"]) -> list[str]:
+    images: list[str] = []
+    for message in messages:
+        content = message.content
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type", "")) not in {"image_url", "input_image"}:
+                continue
+            raw = item.get("image_url")
+            url = raw.get("url") if isinstance(raw, dict) else raw
+            normalized = _normalize_image_payload(url)
+            if normalized:
+                images.append(normalized)
+    return images
+
+
+def _latest_user_text_openai(messages: list["OpenAIChatMessage"]) -> str:
+    for message in reversed(messages):
+        if message.role != "user":
+            continue
+        text = _normalize_content(message.content)
+        if text:
+            return text
+    return ""
+
+
+def _latest_user_text_ollama(messages: list["OllamaMessage"]) -> str:
+    for message in reversed(messages):
+        if message.role == "user" and message.content.strip():
+            return message.content.strip()
+    return ""
+
+
+def _extract_images_from_ollama_messages(messages: list["OllamaMessage"]) -> list[str]:
+    images: list[str] = []
+    for message in messages:
+        for entry in message.images:
+            normalized = _normalize_image_payload(entry)
+            if normalized:
+                images.append(normalized)
+    return images
+
+
 def _is_cuda_oom(exc: Exception) -> bool:
     message = str(exc).lower()
     return "cuda out of memory" in message or "cudnn_status_alloc_failed" in message
@@ -178,9 +306,9 @@ def _openai_chat_stream_chunks(
     created: int,
     model: str,
     text_block: dict[str, Any],
-    image_block: dict[str, Any],
+    image_block: dict[str, Any] | None,
     message_text: str,
-    image_url: str,
+    image_url: str | None,
     include_admin_log: bool,
     include_final_event: bool,
 ) -> Iterator[str]:
@@ -188,7 +316,7 @@ def _openai_chat_stream_chunks(
         yield _sse_line(
             {
                 "admin_log": True,
-                "message": "[chat] generated image response",
+                "message": "[chat] generated image response" if image_block else "[chat] described image",
                 "provider": "zimage_server",
                 "model": model,
             }
@@ -210,21 +338,22 @@ def _openai_chat_stream_chunks(
         }
     )
 
-    yield _sse_line(
-        {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": [image_block]},
-                    "finish_reason": None,
-                }
-            ],
-        }
-    )
+    if image_block is not None:
+        yield _sse_line(
+            {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": [image_block]},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
 
     final_chunk = {
         "id": completion_id,
@@ -245,7 +374,7 @@ def _openai_chat_stream_chunks(
         yield _sse_line(
             {
                 "final": True,
-                "html": _build_final_html(message_text, image_url),
+                "html": _build_final_html(message_text, image_url) if image_url else f"<p>{html.escape(message_text)}</p>",
                 "reasoningHtml": "",
                 "contentEmpty": False,
                 "provider": "zimage_server",
@@ -262,18 +391,21 @@ def _ollama_chat_stream_chunks(
     model: str,
     created_at: str,
     message_text: str,
-    image_b64: str,
+    image_b64: str | None,
     elapsed: float,
 ) -> Iterator[str]:
+    first_message: dict[str, Any] = {
+        "role": "assistant",
+        "content": message_text,
+    }
+    if image_b64 is not None:
+        first_message["images"] = [image_b64]
+
     yield _ndjson_line(
         {
             "model": model,
             "created_at": created_at,
-            "message": {
-                "role": "assistant",
-                "content": message_text,
-                "images": [image_b64],
-            },
+            "message": first_message,
             "done": False,
         }
     )
@@ -299,18 +431,19 @@ def _ollama_generate_stream_chunks(
     model: str,
     created_at: str,
     response_text: str,
-    image_b64: str,
+    image_b64: str | None,
     elapsed: float,
 ) -> Iterator[str]:
-    yield _ndjson_line(
-        {
-            "model": model,
-            "created_at": created_at,
-            "response": response_text,
-            "images": [image_b64],
-            "done": False,
-        }
-    )
+    first_chunk: dict[str, Any] = {
+        "model": model,
+        "created_at": created_at,
+        "response": response_text,
+        "done": False,
+    }
+    if image_b64 is not None:
+        first_chunk["images"] = [image_b64]
+
+    yield _ndjson_line(first_chunk)
     yield _ndjson_line(
         {
             "model": model,
@@ -533,6 +666,169 @@ class DiffusersEditService:
         )
 
 
+class VisionService:
+    """Image-to-text backed by an Ollama-compatible vision model.
+
+    Z-Image itself is generation-only, so image understanding is delegated to a
+    local multimodal model (moondream / llava / gemma3 ...) served over Ollama's
+    ``/api/chat``. Everything is configurable so a remote or OpenAI-compatible
+    gateway can be pointed at instead.
+    """
+
+    def __init__(self) -> None:
+        self._enabled = os.environ.get("ZIMAGE_VISION_ENABLED", "1") == "1"
+        self._base_url = os.environ.get("ZIMAGE_VISION_URL", "http://127.0.0.1:11434").rstrip("/")
+        self._model = os.environ.get("ZIMAGE_VISION_MODEL", "moondream:latest")
+        # The generation pipelines already hold most of the VRAM, so let the vision
+        # model unload quickly instead of parking next to them.
+        self._keep_alive = os.environ.get("ZIMAGE_VISION_KEEP_ALIVE", "30s")
+        self._timeout = float(os.environ.get("ZIMAGE_VISION_TIMEOUT", "180"))
+        # Small vision models (moondream) silently return an empty completion when
+        # handed more than one image. Batch up to this many per call and describe
+        # the rest in follow-up calls. Raise it for llava/gemma3-class models.
+        self._max_images_per_request = max(1, int(os.environ.get("ZIMAGE_VISION_MAX_IMAGES", "1")))
+        num_gpu_raw = os.environ.get("ZIMAGE_VISION_NUM_GPU", "").strip()
+        self._num_gpu = int(num_gpu_raw) if num_gpu_raw else None
+        self._default_prompt = os.environ.get(
+            "ZIMAGE_VISION_DEFAULT_PROMPT",
+            "Describe this image in detail.",
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def available(self) -> bool:
+        if not self._enabled:
+            return False
+        try:
+            with urllib.request.urlopen(f"{self._base_url}/api/tags", timeout=3) as response:
+                return 200 <= response.status < 300
+        except Exception:
+            return False
+
+    def describe_image_base64(
+        self,
+        *,
+        images_b64: list[str],
+        prompt: str,
+        model: str | None = None,
+    ) -> tuple[str, float]:
+        if not self._enabled:
+            raise RuntimeError("Image understanding is disabled by ZIMAGE_VISION_ENABLED=0.")
+        if not images_b64:
+            raise ValueError("At least one image is required.")
+
+        batch_size = self._max_images_per_request
+        batches = [images_b64[start : start + batch_size] for start in range(0, len(images_b64), batch_size)]
+
+        if len(batches) == 1:
+            return self._chat_once(images_b64=batches[0], prompt=prompt, model=model)
+
+        # More images than the model takes at once: describe each batch and label
+        # the answers so the caller still gets a complete response.
+        sections: list[str] = []
+        total_elapsed = 0.0
+        for index, batch in enumerate(batches, start=1):
+            text, elapsed = self._chat_once(images_b64=batch, prompt=prompt, model=model)
+            total_elapsed += elapsed
+            label = f"Image {index}" if batch_size == 1 else f"Images {index}"
+            sections.append(f"**{label}:** {text}")
+
+        return "\n\n".join(sections), total_elapsed
+
+    def _chat_once(
+        self,
+        *,
+        images_b64: list[str],
+        prompt: str,
+        model: str | None,
+    ) -> tuple[str, float]:
+        resolved_model = model or self._model
+        question = prompt.strip()
+
+        text, elapsed = self._post_chat(images_b64=images_b64, prompt=question or self._default_prompt, model=resolved_model)
+
+        # Small vision models (moondream in particular) sometimes return an empty
+        # completion for a terse question but answer a plain caption request fine.
+        # Fall back to that rather than failing the whole request.
+        if not text and question and question != self._default_prompt:
+            fallback_text, fallback_elapsed = self._post_chat(
+                images_b64=images_b64,
+                prompt=self._default_prompt,
+                model=resolved_model,
+            )
+            text = fallback_text
+            elapsed += fallback_elapsed
+
+        if not text:
+            raise RuntimeError(
+                f"Vision model '{resolved_model}' returned an empty response for "
+                f"{len(images_b64)} image(s). If it only supports one image at a time, "
+                "set ZIMAGE_VISION_MAX_IMAGES=1."
+            )
+
+        return text, elapsed
+
+    def _post_chat(self, *, images_b64: list[str], prompt: str, model: str) -> tuple[str, float]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "stream": False,
+            "keep_alive": self._keep_alive,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": images_b64,
+                }
+            ],
+        }
+        if self._num_gpu is not None:
+            payload["options"] = {"num_gpu": self._num_gpu}
+
+        http_request = urllib.request.Request(
+            f"{self._base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(http_request, timeout=self._timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Vision model '{model}' returned {exc.code}: {detail or exc.reason}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Vision backend unreachable at {self._base_url} ({exc.reason}). "
+                "Start Ollama or set ZIMAGE_VISION_URL."
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(f"Vision request failed: {exc}") from exc
+        elapsed = time.perf_counter() - started
+
+        text = ""
+        message = body.get("message")
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            text = message["content"].strip()
+        if not text and isinstance(body.get("response"), str):
+            text = body["response"].strip()
+
+        # An empty completion is a model quirk, not a transport error — let the
+        # caller decide whether to retry with a different prompt.
+        return text, elapsed
+
+
 class OpenAIChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str | list[dict[str, Any]]
@@ -600,6 +896,7 @@ class OllamaGenerateRequest(BaseModel):
 app = FastAPI(title="Z-Image API", version="0.1.0")
 service = ZImageService()
 diffusers_edit_service = DiffusersEditService()
+vision_service = VisionService()
 
 
 @app.exception_handler(HTTPException)
@@ -642,8 +939,16 @@ def unhandled_exception_handler(request: Request, exc: Exception) -> JSONRespons
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "vision": {
+            "enabled": vision_service.enabled,
+            "available": vision_service.available(),
+            "model": vision_service.model,
+            "url": vision_service.base_url,
+        },
+    }
 
 
 @app.get("/v1/models")
@@ -670,6 +975,14 @@ def get_generated_image(image_id: str) -> Response:
 
 @app.post("/v1/chat/completions", response_model=None)
 def openai_chat_completions(request: Request, body: OpenAIChatCompletionsRequest) -> dict[str, Any] | StreamingResponse:
+
+    attached_images = _extract_images_from_openai_messages(body.messages)
+    question = _latest_user_text_openai(body.messages)
+
+    # An attached image plus a question is image-to-text; an attached image plus an
+    # instruction stays image-to-image and falls through to the generation path.
+    if attached_images and _wants_text_answer(question):
+        return _openai_vision_completion(body=body, images_b64=attached_images, question=question)
 
     prompt = _build_prompt_from_openai_messages(body.messages)
     if not prompt:
@@ -931,7 +1244,126 @@ async def openai_image_edits(
     _ = style
     _ = user
 
-    valid_images = [uploaded for uploaded in image if uploaded.filename]
+    image_bytes_list = await _read_uploaded_images(image)
+
+    return {
+        "created": int(time.time()),
+        "data": await _edit_images(
+            request=request,
+            image_bytes_list=image_bytes_list,
+            prompt=prompt,
+            n=n,
+            size=size,
+            response_format=response_format,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            strength=strength,
+            seed=seed,
+        ),
+    }
+
+
+@app.post("/v1/images/describe")
+@app.post("/v1/images/describe/")
+@app.post("/images/describe")
+@app.post("/images/describe/")
+async def openai_image_describe(
+    model: str | None = Form(None),
+    prompt: str = Form(""),
+    image: list[UploadFile] = File(...),
+    user: str | None = Form(None),
+) -> dict[str, Any]:
+    """Image-to-text: answer a question about, or caption, the uploaded image(s)."""
+    _ = user
+
+    image_bytes_list = await _read_uploaded_images(image)
+    images_b64 = [base64.b64encode(current).decode("utf-8") for current in image_bytes_list]
+
+    text, elapsed = await _describe_images(images_b64=images_b64, prompt=prompt, model=model)
+
+    return {
+        "created": int(time.time()),
+        "model": model or vision_service.model,
+        "text": text,
+        # `reply` / `choices` are duplicated so OpenAI-style and simple clients both work.
+        "reply": text,
+        "elapsed": elapsed,
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": text},
+            }
+        ],
+    }
+
+
+@app.post("/v1/images/chat")
+@app.post("/v1/images/chat/")
+async def image_chat(
+    request: Request,
+    model: str = Form("Z-image-turbo"),
+    prompt: str = Form(""),
+    image: list[UploadFile] = File(...),
+    mode: Literal["auto", "edit", "describe"] = Form("auto"),
+    n: int = Form(1),
+    size: str = Form("512x512"),
+    response_format: Literal["b64_json", "url"] = Form("b64_json"),
+    num_inference_steps: int | None = Form(None),
+    guidance_scale: float = Form(0.0),
+    strength: float = Form(0.6),
+    seed: int | None = Form(None),
+    vision_model: str | None = Form(None),
+) -> dict[str, Any]:
+    """Single upload entry point that routes to image-to-text or image-to-image.
+
+    ``mode=auto`` picks based on the prompt: questions and "describe this" get a
+    text answer, everything else (including a bare upload) gets an edited image.
+    """
+    image_bytes_list = await _read_uploaded_images(image)
+
+    resolved_mode = mode
+    if resolved_mode == "auto":
+        resolved_mode = "describe" if _wants_text_answer(prompt) else "edit"
+
+    if resolved_mode == "describe":
+        images_b64 = [base64.b64encode(current).decode("utf-8") for current in image_bytes_list]
+        text, elapsed = await _describe_images(images_b64=images_b64, prompt=prompt, model=vision_model)
+        return {
+            "created": int(time.time()),
+            "mode": "describe",
+            "model": vision_model or vision_service.model,
+            "reply": text,
+            "text": text,
+            "elapsed": elapsed,
+            "data": [],
+        }
+
+    if not prompt.strip():
+        prompt = "Please edit this image."
+
+    return {
+        "created": int(time.time()),
+        "mode": "edit",
+        "model": model,
+        "reply": "Image edit completed.",
+        "data": await _edit_images(
+            request=request,
+            image_bytes_list=image_bytes_list,
+            prompt=prompt,
+            n=n,
+            size=size,
+            response_format=response_format,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            strength=strength,
+            seed=seed,
+        ),
+    }
+
+
+async def _read_uploaded_images(uploads: list[UploadFile]) -> list[bytes]:
+    valid_images = [uploaded for uploaded in uploads if uploaded.filename]
     if not valid_images:
         raise HTTPException(status_code=400, detail="image file is required.")
 
@@ -944,14 +1376,98 @@ async def openai_image_edits(
     if not image_bytes_list:
         raise HTTPException(status_code=400, detail="image file is empty.")
 
+    return image_bytes_list
+
+
+def _describe_images_sync(*, images_b64: list[str], prompt: str, model: str | None) -> tuple[str, float]:
+    try:
+        return vision_service.describe_image_base64(images_b64=images_b64, prompt=prompt, model=model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Image description failed: {exc}") from exc
+
+
+async def _describe_images(*, images_b64: list[str], prompt: str, model: str | None) -> tuple[str, float]:
+    return await asyncio.to_thread(
+        _describe_images_sync,
+        images_b64=images_b64,
+        prompt=prompt,
+        model=model,
+    )
+
+
+def _openai_vision_completion(
+    *,
+    body: OpenAIChatCompletionsRequest,
+    images_b64: list[str],
+    question: str,
+) -> dict[str, Any] | StreamingResponse:
+    text, _elapsed = _describe_images_sync(images_b64=images_b64, prompt=question, model=None)
+
+    created = int(time.time())
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+
+    if body.stream:
+        return StreamingResponse(
+            _openai_chat_stream_chunks(
+                completion_id=completion_id,
+                created=created,
+                model=body.model,
+                text_block={"type": "text", "text": text},
+                image_block=None,
+                message_text=text,
+                image_url=None,
+                include_admin_log=body.include_admin_log,
+                include_final_event=body.include_final_event,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return {
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": body.model,
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": text},
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+async def _edit_images(
+    *,
+    request: Request,
+    image_bytes_list: list[bytes],
+    prompt: str,
+    n: int,
+    size: str,
+    response_format: Literal["b64_json", "url"],
+    num_inference_steps: int | None,
+    guidance_scale: float,
+    strength: float,
+    seed: int | None,
+) -> list[dict[str, str]]:
+    if n < 1:
+        raise HTTPException(status_code=400, detail="n must be >= 1.")
+
     image_bytes = _compose_images_for_edit(images=image_bytes_list, size=size)
 
     default_generation_steps = int(os.environ.get("ZIMAGE_DEFAULT_NUM_INFERENCE_STEPS", "4"))
     default_edit_steps = max(1, default_generation_steps * 2)
     effective_num_inference_steps = num_inference_steps if num_inference_steps is not None else default_edit_steps
-
-    if n < 1:
-        raise HTTPException(status_code=400, detail="n must be >= 1.")
 
     edited_images: list[dict[str, str]] = []
     for _index in range(n):
@@ -988,14 +1504,90 @@ async def openai_image_edits(
         else:
             edited_images.append({"b64_json": edited_b64})
 
+    return edited_images
+
+
+def _ollama_vision_chat(
+    *,
+    body: OllamaChatRequest,
+    images_b64: list[str],
+    question: str,
+) -> dict[str, Any] | StreamingResponse:
+    text, elapsed = _describe_images_sync(images_b64=images_b64, prompt=question, model=None)
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    if body.stream:
+        return StreamingResponse(
+            _ollama_chat_stream_chunks(
+                model=body.model,
+                created_at=created_at,
+                message_text=text,
+                image_b64=None,
+                elapsed=elapsed,
+            ),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     return {
-        "created": int(time.time()),
-        "data": edited_images,
+        "model": body.model,
+        "created_at": created_at,
+        "message": {"role": "assistant", "content": text},
+        "done": True,
+        "total_duration": int(elapsed * 1_000_000_000),
+        "eval_count": 0,
+        "eval_duration": int(elapsed * 1_000_000_000),
+    }
+
+
+def _ollama_vision_generate(
+    *,
+    body: OllamaGenerateRequest,
+    images_b64: list[str],
+) -> dict[str, Any] | StreamingResponse:
+    text, elapsed = _describe_images_sync(images_b64=images_b64, prompt=body.prompt, model=None)
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    if body.stream:
+        return StreamingResponse(
+            _ollama_generate_stream_chunks(
+                model=body.model,
+                created_at=created_at,
+                response_text=text,
+                image_b64=None,
+                elapsed=elapsed,
+            ),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return {
+        "model": body.model,
+        "created_at": created_at,
+        "response": text,
+        "done": True,
+        "total_duration": int(elapsed * 1_000_000_000),
+        "eval_count": 0,
+        "eval_duration": int(elapsed * 1_000_000_000),
     }
 
 
 @app.post("/api/chat", response_model=None)
 def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
+
+    attached_images = _extract_images_from_ollama_messages(body.messages)
+    question = _latest_user_text_ollama(body.messages)
+
+    if attached_images and _wants_text_answer(question):
+        return _ollama_vision_chat(body=body, images_b64=attached_images, question=question)
 
     prompt = _build_prompt_from_ollama_messages(body.messages)
     if not prompt:
@@ -1053,6 +1645,13 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
 
 @app.post("/api/generate", response_model=None)
 def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any] | StreamingResponse:
+
+    attached_images = [
+        normalized for normalized in (_normalize_image_payload(entry) for entry in body.images) if normalized
+    ]
+
+    if attached_images and _wants_text_answer(body.prompt):
+        return _ollama_vision_generate(body=body, images_b64=attached_images)
 
     options = body.options or {}
     try:
