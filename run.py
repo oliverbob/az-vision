@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -156,18 +157,27 @@ def ensure_frontend_bootstrap() -> None:
     npm = npm_cmd()
 
     if RUN_FRONTEND_INSTALL:
-        if not (FRONTEND_DIR / "node_modules").exists():
-            print("Installing frontend dependencies...")
+        node_modules = FRONTEND_DIR / "node_modules"
+        dependency_files = [FRONTEND_DIR / "package.json", FRONTEND_DIR / "package-lock.json"]
+        dependency_hash = hashlib.sha256()
+        for path in dependency_files:
+            dependency_hash.update(path.name.encode("utf-8"))
+            dependency_hash.update(path.read_bytes())
+        expected_hash = dependency_hash.hexdigest()
+        install_marker = node_modules / ".zimage-dependency-hash"
+        installed_hash = install_marker.read_text(encoding="utf-8").strip() if install_marker.exists() else ""
+
+        if not node_modules.exists() or installed_hash != expected_hash:
+            print("Installing frontend dependencies (package files changed)...")
             run([npm, "install", "--include=optional"], cwd=FRONTEND_DIR)
 
         rc, _ = check_output(["node", "-e", "require('@tailwindcss/oxide')"], cwd=FRONTEND_DIR)
         if rc != 0:
             print("Detected missing Tailwind native optional dependency; reinstalling frontend deps...")
-            shutil.rmtree(FRONTEND_DIR / "node_modules", ignore_errors=True)
-            lock_path = FRONTEND_DIR / "package-lock.json"
-            if lock_path.exists():
-                lock_path.unlink()
+            shutil.rmtree(node_modules, ignore_errors=True)
             run([npm, "install", "--include=optional"], cwd=FRONTEND_DIR)
+
+        install_marker.write_text(expected_hash + "\n", encoding="utf-8")
 
     if RUN_FRONTEND_CHECK:
         print("Running frontend check...")
