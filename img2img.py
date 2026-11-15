@@ -59,8 +59,15 @@ class ZImageImg2ImgService:
         with self._lock:
             if self._pipeline is not None:
                 return
+            model_path = self._model_id
+            # Resolve hub-style ids (e.g. "Tongyi-MAI/Z-Image-Turbo") to the local
+            # checkpoint dir so we load from disk instead of stalling on the hub
+            # snapshot download. This also avoids re-fetching weights we already have.
+            if "/" in model_path and not Path(model_path).exists():
+                local_model_dir = Path(__file__).resolve().parent / "ckpts" / model_path.split("/")[-1]
+                model_path = str(local_model_dir)
             pipeline = ZImageImg2ImgPipeline.from_pretrained(
-                self._model_id,
+                model_path,
                 torch_dtype=self._dtype,
                 low_cpu_mem_usage=False,
             )

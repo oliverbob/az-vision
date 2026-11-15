@@ -510,6 +510,19 @@ class ZImageService:
 
         self._components = components
 
+    def release(self) -> None:
+        """Drop cached model components and free GPU memory.
+
+        The text pipeline and the diffusers image-edit pipeline each load their
+        own copy of the Z-Image weights. On a 24GB GPU holding both at once is not
+        possible, so callers (e.g. the image-edit flow) must release the text
+        pipeline before loading another copy.
+        """
+        with self._lock:
+            self._components = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def generate_image_base64(
         self,
         prompt: str,
@@ -599,7 +612,7 @@ class ZImageService:
 
 
 class DiffusersEditService:
-    def __init__(self) -> None:
+    def __init__(self, text_service: "ZImageService | None" = None) -> None:
         self._enabled = os.environ.get("ZIMAGE_ENABLE_DIFFUSERS_EDITS", "1") == "1"
         self._model_id = os.environ.get("ZIMAGE_DIFFUSERS_EDIT_MODEL_ID", "Tongyi-MAI/Z-Image-Turbo")
         self._device = os.environ.get("ZIMAGE_DIFFUSERS_EDIT_DEVICE", _select_device())
@@ -610,6 +623,7 @@ class DiffusersEditService:
             device=self._device,
             dtype_name=self._dtype_name,
         )
+        self._text_service = text_service
         self._load_error: Exception | None = None
         self._lock = threading.Lock()
 
@@ -624,6 +638,12 @@ class DiffusersEditService:
             if not self._enabled:
                 self._load_error = RuntimeError("Diffusers edits are disabled by ZIMAGE_ENABLE_DIFFUSERS_EDITS=0")
                 raise self._load_error
+
+            # The edit pipeline ships its own copy of the Z-Image weights, which
+            # roughly doubles peak VRAM on the 24GB GPU. Drop the text pipeline's
+            # cached components before loading so we never hold two copies.
+            if self._text_service is not None:
+                self._text_service.release()
 
             try:
                 self._service.lazy_load()
@@ -895,7 +915,7 @@ class OllamaGenerateRequest(BaseModel):
 
 app = FastAPI(title="Z-Image API", version="0.1.0")
 service = ZImageService()
-diffusers_edit_service = DiffusersEditService()
+diffusers_edit_service = DiffusersEditService(text_service=service)
 vision_service = VisionService()
 
 
