@@ -698,7 +698,7 @@ class VisionService:
     def __init__(self) -> None:
         self._enabled = os.environ.get("ZIMAGE_VISION_ENABLED", "1") == "1"
         self._base_url = os.environ.get("ZIMAGE_VISION_URL", "http://127.0.0.1:11434").rstrip("/")
-        self._model = os.environ.get("ZIMAGE_VISION_MODEL", "moondream:latest")
+        self._model = os.environ.get("ZIMAGE_VISION_MODEL", "qwen3.5:latest")
         # The generation pipelines already hold most of the VRAM, so let the vision
         # model unload quickly instead of parking next to them.
         self._keep_alive = os.environ.get("ZIMAGE_VISION_KEEP_ALIVE", "30s")
@@ -1508,8 +1508,15 @@ async def _edit_images(
     # close to the source image so the person's face stays consistent.
     face_present = await _image_has_face(image_bytes=image_bytes)
     effective_strength = float(strength)
+    effective_prompt = prompt
     if face_present:
         effective_strength = min(effective_strength, float(os.environ.get("ZIMAGE_FACE_PRESERVE_STRENGTH", "0.1")))
+        effective_prompt = (
+            "Preserve the person's identity and facial details exactly as in the source image, "
+            "including face shape, eyes, nose, mouth, skin tone, expression, and age. "
+            "Apply only the requested edit; keep the face natural and unchanged. "
+            f"Requested edit: {prompt}"
+        )
 
     edited_images: list[dict[str, str]] = []
     for _index in range(n):
@@ -1518,7 +1525,7 @@ async def _edit_images(
             edited_b64, _elapsed = await asyncio.to_thread(
                 diffusers_edit_service.edit_image_base64,
                 image_bytes=image_bytes,
-                prompt=prompt,
+                prompt=effective_prompt,
                 size=size,
                 num_inference_steps=effective_num_inference_steps,
                 guidance_scale=guidance_scale,
