@@ -1467,6 +1467,21 @@ def _openai_vision_completion(
     }
 
 
+async def _image_has_face(*, image_bytes: bytes) -> bool:
+    """Best-effort check for a human face in an uploaded edit image.
+
+    Uses the vision backend (Ollama + multimodal model) to answer whether the
+    image contains a person. Returns False when the check is unavailable so
+    edits still proceed.
+    """
+    images_b64 = [base64.b64encode(image_bytes).decode("utf-8")]
+    try:
+        text, _elapsed = await _describe_images(images_b64=images_b64, prompt="Does this image contain a human face? Answer yes or no.", model=None)
+    except Exception:
+        return False
+    return "yes" in text.strip().lower()
+
+
 async def _edit_images(
     *,
     request: Request,
@@ -1489,6 +1504,13 @@ async def _edit_images(
     default_edit_steps = max(1, default_generation_steps * 2)
     effective_num_inference_steps = num_inference_steps if num_inference_steps is not None else default_edit_steps
 
+    # Face preservation: when the uploaded image contains a face, keep the edit
+    # close to the source image so the person's face stays consistent.
+    face_present = await _image_has_face(image_bytes=image_bytes)
+    effective_strength = float(strength)
+    if face_present:
+        effective_strength = min(effective_strength, float(os.environ.get("ZIMAGE_FACE_PRESERVE_STRENGTH", "0.35")))
+
     edited_images: list[dict[str, str]] = []
     for _index in range(n):
         current_seed = seed + _index if seed is not None else None
@@ -1500,7 +1522,7 @@ async def _edit_images(
                 size=size,
                 num_inference_steps=effective_num_inference_steps,
                 guidance_scale=guidance_scale,
-                strength=strength,
+                strength=effective_strength,
                 seed=current_seed,
             )
         except ValueError as exc:
