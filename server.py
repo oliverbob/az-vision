@@ -1509,7 +1509,7 @@ async def _edit_images(
     face_present = await _image_has_face(image_bytes=image_bytes)
     effective_strength = float(strength)
     if face_present:
-        effective_strength = min(effective_strength, float(os.environ.get("ZIMAGE_FACE_PRESERVE_STRENGTH", "0.35")))
+        effective_strength = min(effective_strength, float(os.environ.get("ZIMAGE_FACE_PRESERVE_STRENGTH", "0.1")))
 
     edited_images: list[dict[str, str]] = []
     for _index in range(n):
