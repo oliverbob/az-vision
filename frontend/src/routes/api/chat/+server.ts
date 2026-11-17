@@ -52,6 +52,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     let history: IncomingChatMessage[] = [];
     let attachedImages: File[] = [];
     let uploadMode: UploadMode = "auto";
+    let requestedEditStrength: number | undefined;
 
     if (isMultipart) {
       const form = await request.formData();
@@ -60,6 +61,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       const rawMode = String(form.get("mode") ?? "auto");
       if ((UPLOAD_MODES as readonly string[]).includes(rawMode)) {
         uploadMode = rawMode as UploadMode;
+      }
+      const strengthField = form.get("strength");
+      if (typeof strengthField === "string" && strengthField.trim() !== "") {
+        const rawStrength = Number(strengthField);
+        if (Number.isFinite(rawStrength)) {
+          requestedEditStrength = Math.min(0.7, Math.max(0.1, rawStrength));
+        }
       }
 
       const rawHistory = form.get("history");
@@ -137,8 +145,11 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     const defaultSteps = Number(env.ZIMAGE_STEPS ?? "4");
     const defaultGuidance = Number(env.ZIMAGE_GUIDANCE_SCALE ?? "0.0");
     const baseSteps = Number.isFinite(defaultSteps) ? defaultSteps : 4;
-    const defaultEditSteps = Number(env.ZIMAGE_EDIT_STEPS ?? String(baseSteps * 2));
-    const defaultEditStrength = Number(env.ZIMAGE_EDIT_STRENGTH ?? "0.6");
+    const defaultEditSteps = Number(env.ZIMAGE_EDIT_STEPS ?? "8");
+    const defaultEditGuidance = Number(env.ZIMAGE_EDIT_GUIDANCE_SCALE ?? "0.0");
+    const defaultEditWidth = Number(env.ZIMAGE_EDIT_WIDTH ?? "512");
+    const defaultEditHeight = Number(env.ZIMAGE_EDIT_HEIGHT ?? "512");
+    const defaultEditStrength = Number(env.ZIMAGE_EDIT_STRENGTH ?? "0.65");
 
     let upstream: Response;
     try {
@@ -152,11 +163,14 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         imageChatPayload.set("n", "1");
         imageChatPayload.set(
           "size",
-          `${Number.isFinite(defaultWidth) ? defaultWidth : 512}x${Number.isFinite(defaultHeight) ? defaultHeight : 512}`,
+          `${Number.isFinite(defaultEditWidth) ? defaultEditWidth : 512}x${Number.isFinite(defaultEditHeight) ? defaultEditHeight : 512}`,
         );
-        imageChatPayload.set("num_inference_steps", String(Number.isFinite(defaultEditSteps) ? defaultEditSteps : baseSteps * 2));
-        imageChatPayload.set("guidance_scale", String(Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0));
-        imageChatPayload.set("strength", String(Number.isFinite(defaultEditStrength) ? defaultEditStrength : 0.6));
+        imageChatPayload.set("num_inference_steps", String(Number.isFinite(defaultEditSteps) ? defaultEditSteps : 8));
+        imageChatPayload.set("guidance_scale", String(Number.isFinite(defaultEditGuidance) ? defaultEditGuidance : 0.0));
+        imageChatPayload.set(
+          "strength",
+          String(requestedEditStrength ?? (Number.isFinite(defaultEditStrength) ? defaultEditStrength : 0.65)),
+        );
         imageChatPayload.set("response_format", "b64_json");
         if (env.ZIMAGE_VISION_MODEL?.trim()) {
           imageChatPayload.set("vision_model", env.ZIMAGE_VISION_MODEL.trim());

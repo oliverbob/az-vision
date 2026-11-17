@@ -10,10 +10,16 @@ from pathlib import Path
 import threading
 import time
 
+import numpy as np
 import torch
 from diffusers import ZImageImg2ImgPipeline
 from diffusers.utils import load_image
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFilter, UnidentifiedImageError
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover - dependency is installed by pyproject.toml
+    cv2 = None
 
 
 def _pick_device(explicit: str | None) -> str:
@@ -38,6 +44,88 @@ def _pick_dtype(dtype_name: str, device: str) -> torch.dtype:
             return torch.float32
         return torch.float16
     return torch.float32
+
+
+def _detect_yunet_faces(image: Image.Image, model_path: Path) -> list[np.ndarray]:
+    if cv2 is None or not model_path.is_file():
+        return []
+    rgb = np.asarray(image.convert("RGB"))
+    try:
+        detector = cv2.FaceDetectorYN_create(
+            str(model_path), "", (image.width, image.height), 0.55, 0.3, 5000
+        )
+        _status, faces = detector.detect(rgb[:, :, ::-1].copy())
+    except Exception:
+        return []
+    if faces is None:
+        return []
+    return [face for face in faces if float(face[-1]) >= 0.80 and float(face[2]) >= 8 and float(face[3]) >= 8]
+
+
+def preserve_face_pixels(source: Image.Image, generated: Image.Image) -> Image.Image:
+    """Align the source face to the generated subject before blending it in.
+
+    Restoring at the source coordinates can leave a floating face when the edit
+    changes pose or composition. YuNet landmarks align the source face with the
+    largest confidently detected face in the generated image. If that match is
+    ambiguous, the generated result is left untouched.
+    """
+    if cv2 is None:
+        return generated
+
+    source = source.convert("RGB")
+    generated = generated.convert("RGB").resize(source.size, Image.Resampling.LANCZOS)
+    model_path = Path(__file__).resolve().parent / "assets" / "face_detection_yunet_2023mar.onnx"
+    source_faces = _detect_yunet_faces(source, model_path)
+    generated_faces = _detect_yunet_faces(generated, model_path)
+    if not source_faces or not generated_faces:
+        return generated
+
+    # Keep the main subject only. This avoids copying false detections from
+    # patterns, jewelry, or artwork elsewhere in the frame.
+    source_face = max(source_faces, key=lambda face: float(face[2] * face[3]))
+    target_face = max(generated_faces, key=lambda face: float(face[2] * face[3]))
+    source_area = max(1.0, float(source_face[2] * source_face[3]))
+    target_area = max(1.0, float(target_face[2] * target_face[3]))
+    scale = np.sqrt(target_area / source_area)
+    if not 0.35 <= scale <= 2.5:
+        return generated
+
+    source_landmarks = np.asarray(source_face[4:14], dtype=np.float32).reshape(5, 2)
+    target_landmarks = np.asarray(target_face[4:14], dtype=np.float32).reshape(5, 2)
+    transform, _inliers = cv2.estimateAffinePartial2D(
+        source_landmarks, target_landmarks, method=cv2.LMEDS
+    )
+    if transform is None or not np.isfinite(transform).all():
+        return generated
+
+    width, height = source.size
+    warped_source = cv2.warpAffine(
+        np.asarray(source),
+        transform,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+    x, y, face_width, face_height = (float(value) for value in target_face[:4])
+    mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.ellipse(
+        mask,
+        (int(x + face_width * 0.5), int(y + face_height * 0.43)),
+        (max(2, int(face_width * 0.78)), max(2, int(face_height * 0.84))),
+        0,
+        0,
+        360,
+        255,
+        -1,
+    )
+    feather = max(2, int(min(face_width, face_height) * 0.12))
+    mask_image = Image.fromarray(mask, mode="L").filter(ImageFilter.GaussianBlur(feather))
+    return Image.composite(
+        Image.fromarray(warped_source, mode="RGB"),
+        generated,
+        mask_image,
+    )
 
 
 class ZImageImg2ImgService:
@@ -139,11 +227,21 @@ class ZImageImg2ImgService:
         num_inference_steps: int,
         guidance_scale: float,
         seed: int | None,
+        face_source_bytes: bytes | None = None,
     ) -> tuple[str, float]:
         try:
             input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         except UnidentifiedImageError as exc:
             raise ValueError("Invalid image file.") from exc
+
+        try:
+            face_source = (
+                Image.open(io.BytesIO(face_source_bytes)).convert("RGB")
+                if face_source_bytes is not None
+                else input_image
+            )
+        except UnidentifiedImageError as exc:
+            raise ValueError("Invalid face-preservation source image.") from exc
 
         input_image = input_image.resize((width, height), Image.Resampling.LANCZOS)
         image, elapsed = self.edit_image(
@@ -155,6 +253,13 @@ class ZImageImg2ImgService:
             guidance_scale=guidance_scale,
             seed=seed,
         )
+        # Keep model inference within the requested working size, then blend the
+        # original face back at the uploaded image's resolution (up to 2048px).
+        output_width, output_height = image.size
+        face_source.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+        if face_source.width < output_width and face_source.height < output_height:
+            face_source = face_source.resize((output_width, output_height), Image.Resampling.LANCZOS)
+        image = preserve_face_pixels(face_source, image)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("utf-8"), elapsed

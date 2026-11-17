@@ -33,6 +33,7 @@
   let selectedImageFiles: File[] = [];
   let selectedImagePreviews: string[] = [];
   let uploadMode: UploadMode = "auto";
+  let editStrength = 0.65;
   // The image that a plain-text follow-up keeps editing, so "now make the sky
   // purple" refines the last result instead of generating a new image from scratch.
   let workingImageUrl: string | null = null;
@@ -179,6 +180,7 @@
     const filesToSend = [...selectedImageFiles];
     const previewsToSend = [...selectedImagePreviews];
     const modeToSend = uploadMode;
+    const strengthToSend = editStrength;
     // With no new upload, a live working image turns this into a follow-up edit.
     const followUpImageUrl = filesToSend.length === 0 ? workingImageUrl : null;
     const attachmentLabel =
@@ -212,6 +214,7 @@
         const form = new FormData();
         form.set("message", text);
         form.set("mode", modeToSend);
+        form.set("strength", String(strengthToSend));
         form.set("history", JSON.stringify(history));
         for (const file of filesToSend) {
           form.append("image", file, file.name || "image.png");
@@ -223,6 +226,7 @@
         // The working-image chip is an explicit "keep editing this", so never
         // let the prompt reroute this to a text answer.
         form.set("mode", "edit");
+        form.set("strength", String(strengthToSend));
         form.set("history", JSON.stringify(history));
         form.append("image", await dataUrlToFile(followUpImageUrl, "previous.png"), "previous.png");
         response = await fetch("/api/chat", { method: "POST", body: form });
@@ -989,6 +993,23 @@
                   ✕
                 </button>
               </div>
+            {/if}
+
+            {#if (selectedImageFiles.length > 0 && uploadMode !== "describe") || workingImageUrl}
+              <label class="mb-2 flex items-center gap-3 px-2 text-xs text-slate-300">
+                <span class="shrink-0">Edit strength <strong class="text-slate-100">{Number(editStrength).toFixed(2)}</strong></span>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="0.7"
+                  step="0.05"
+                  bind:value={editStrength}
+                  aria-label="Image edit strength"
+                  title="Lower values keep more of the source; higher values make stronger prompt edits"
+                  class="h-1.5 min-w-0 flex-1 cursor-pointer accent-sky-400"
+                />
+                <span class="shrink-0 text-slate-500">0.1 subtle · 0.7 strong</span>
+              </label>
             {/if}
 
             <textarea

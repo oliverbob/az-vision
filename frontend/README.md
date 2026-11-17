@@ -52,7 +52,7 @@ After an edit returns a result, that result becomes the **working image**: it is
 - Follow-ups are always sent as `mode=edit`, so a polite phrasing like "can you make it brighter?" is never mistaken for a question.
 - The working image resets when you switch or start a conversation.
 
-Each follow-up re-sends the previous result at `ZIMAGE_EDIT_STRENGTH` (default `0.6`). Raise it for more dramatic changes per step, lower it to keep more of the original.
+Each follow-up re-sends the previous result at the strength shown by the chat slider (default `0.65`), 8 steps, and CFG 0 (the Turbo default). The slider ranges from `0.1` for subtle changes to `0.7` for stronger edits. Image edits default to a maximum `512x512` diffusion canvas via `ZIMAGE_EDIT_WIDTH` and `ZIMAGE_EDIT_HEIGHT`; single images keep their aspect ratio. The backend blends detected face pixels from the original upload back into the result at up to 2048px, so diffusion can edit the image without discarding the source face detail. The backend caps strength at `0.7` to avoid large composition shifts that misalign the restored face. Direct backend API callers can raise that cap with `ZIMAGE_MAX_EDIT_STRENGTH`.
 
 Image-to-text is served by a local vision model over Ollama — see `ZIMAGE_VISION_*` in the backend README. `GET /health` reports whether it is reachable.
 

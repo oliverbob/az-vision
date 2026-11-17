@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import traceback
 from datetime import datetime, timezone
 import html
 import io
@@ -661,6 +662,7 @@ class DiffusersEditService:
         guidance_scale: float,
         strength: float,
         seed: int | None,
+        face_source_bytes: bytes | None = None,
     ) -> tuple[str, float]:
         self._lazy_load()
 
@@ -683,6 +685,7 @@ class DiffusersEditService:
             num_inference_steps=num_inference_steps,
             guidance_scale=effective_guidance_scale,
             seed=seed,
+            face_source_bytes=face_source_bytes,
         )
 
 
@@ -1195,7 +1198,14 @@ def _compose_images_for_edit(*, images: list[bytes], size: str) -> bytes:
             raise HTTPException(status_code=400, detail="Invalid image file.") from exc
 
     if len(decoded_images) == 1:
-        single = decoded_images[0].resize((width, height), Image.Resampling.LANCZOS)
+        # Keep the source aspect ratio. Stretching every upload into the UI's
+        # default square size distorts faces and makes low-strength img2img less
+        # faithful. The requested size is treated as a maximum canvas dimension.
+        source = decoded_images[0]
+        scale = min(width / source.width, height / source.height)
+        out_width = max(16, int(round(source.width * scale / 16)) * 16)
+        out_height = max(16, int(round(source.height * scale / 16)) * 16)
+        single = source.resize((out_width, out_height), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         single.save(buffer, format="PNG")
         return buffer.getvalue()
@@ -1254,7 +1264,7 @@ async def openai_image_edits(
     user: str | None = Form(None),
     num_inference_steps: int | None = Form(None),
     guidance_scale: float = Form(0.0),
-    strength: float = Form(0.6),
+    strength: float = Form(0.65),
     seed: int | None = Form(None),
 ) -> dict[str, Any]:
     _ = model
@@ -1331,7 +1341,7 @@ async def image_chat(
     response_format: Literal["b64_json", "url"] = Form("b64_json"),
     num_inference_steps: int | None = Form(None),
     guidance_scale: float = Form(0.0),
-    strength: float = Form(0.6),
+    strength: float = Form(0.65),
     seed: int | None = Form(None),
     vision_model: str | None = Form(None),
 ) -> dict[str, Any]:
@@ -1467,21 +1477,6 @@ def _openai_vision_completion(
     }
 
 
-async def _image_has_face(*, image_bytes: bytes) -> bool:
-    """Best-effort check for a human face in an uploaded edit image.
-
-    Uses the vision backend (Ollama + multimodal model) to answer whether the
-    image contains a person. Returns False when the check is unavailable so
-    edits still proceed.
-    """
-    images_b64 = [base64.b64encode(image_bytes).decode("utf-8")]
-    try:
-        text, _elapsed = await _describe_images(images_b64=images_b64, prompt="Does this image contain a human face? Answer yes or no.", model=None)
-    except Exception:
-        return False
-    return "yes" in text.strip().lower()
-
-
 async def _edit_images(
     *,
     request: Request,
@@ -1499,24 +1494,21 @@ async def _edit_images(
         raise HTTPException(status_code=400, detail="n must be >= 1.")
 
     image_bytes = _compose_images_for_edit(images=image_bytes_list, size=size)
+    with Image.open(io.BytesIO(image_bytes)) as composed_image:
+        edit_size = f"{composed_image.width}x{composed_image.height}"
 
     default_generation_steps = int(os.environ.get("ZIMAGE_DEFAULT_NUM_INFERENCE_STEPS", "4"))
     default_edit_steps = max(1, default_generation_steps * 2)
     effective_num_inference_steps = num_inference_steps if num_inference_steps is not None else default_edit_steps
 
-    # Face preservation: when the uploaded image contains a face, keep the edit
-    # close to the source image so the person's face stays consistent.
-    face_present = await _image_has_face(image_bytes=image_bytes)
-    effective_strength = float(strength)
-    effective_prompt = prompt
-    if face_present:
-        effective_strength = min(effective_strength, float(os.environ.get("ZIMAGE_FACE_PRESERVE_STRENGTH", "0.1")))
-        effective_prompt = (
-            "Preserve the person's identity and facial details exactly as in the source image, "
-            "including face shape, eyes, nose, mouth, skin tone, expression, and age. "
-            "Apply only the requested edit; keep the face natural and unchanged. "
-            f"Requested edit: {prompt}"
-        )
+    # Face pixels are restored after diffusion with a locally bundled YuNet
+    # detector, so the requested denoise strength can still make visible edits.
+    max_edit_strength = min(1.0, max(0.0, float(os.environ.get("ZIMAGE_MAX_EDIT_STRENGTH", "0.7"))))
+    effective_strength = min(float(strength), max_edit_strength)
+    effective_prompt = (
+        "Keep the person's identity and facial features consistent with the source. "
+        f"Apply the requested image edit: {prompt}"
+    )
 
     edited_images: list[dict[str, str]] = []
     for _index in range(n):
@@ -1526,7 +1518,8 @@ async def _edit_images(
                 diffusers_edit_service.edit_image_base64,
                 image_bytes=image_bytes,
                 prompt=effective_prompt,
-                size=size,
+                size=edit_size,
+                face_source_bytes=image_bytes_list[0] if len(image_bytes_list) == 1 else None,
                 num_inference_steps=effective_num_inference_steps,
                 guidance_scale=guidance_scale,
                 strength=effective_strength,
@@ -1536,7 +1529,7 @@ async def _edit_images(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             try:
-                edited_b64 = _edit_image_bytes(image_bytes=image_bytes, prompt=prompt, size=size)
+                edited_b64 = _edit_image_bytes(image_bytes=image_bytes, prompt=prompt, size=edit_size)
             except HTTPException:
                 raise
             except Exception as fallback_exc:
@@ -1545,6 +1538,7 @@ async def _edit_images(
                     detail=f"Diffusers unavailable ({exc}); local fallback failed: {fallback_exc}",
                 ) from fallback_exc
         except Exception as exc:
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Image edit failed: {exc}") from exc
 
         if response_format == "url":

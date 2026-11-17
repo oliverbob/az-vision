@@ -15,6 +15,7 @@ dependencies = [
     "safetensors",
     "loguru",
     "pillow",
+    "opencv-python-headless>=4.8,<6",
     "accelerate",
     "huggingface_hub>=0.25.0",
     "fastapi>=0.115.0",

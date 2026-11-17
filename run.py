@@ -136,7 +136,7 @@ def ensure_python_bootstrap() -> None:
 
     ensure_venv()
 
-    code = "import fastapi, uvicorn, torch, multipart, diffusers"
+    code = "import fastapi, uvicorn, torch, multipart, diffusers, cv2"
     rc, _ = check_output([str(VENV_PYTHON), "-c", code], cwd=ROOT_DIR)
     if rc != 0:
         print("Installing Python dependencies (pip install -e .) ...")
